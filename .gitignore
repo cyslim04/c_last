@@ -1,0 +1,5 @@
+.idea/
+.agents/
+.claude/
+*.log
+node_modules/
