@@ -1,5 +1,57 @@
+# Windows 与 IDE 本地文件
 .idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# 本地 Agent / AI 工具私有配置
 .agents/
 .claude/
-*.log
+.claude/settings.local.json
+
+# 前端依赖与构建产物
 node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# 合约依赖与构建产物
+contracts/node_modules/
+contracts/artifacts/
+contracts/cache/
+contracts/coverage/
+contracts/typechain-types/
+
+# 环境变量与本地密钥
+contracts/.env
+contracts/.env.*
+!contracts/.env.example
+frontend/.env.local
+frontend/.env.*.local
+backend/.env
+backend/.env.*
+
+# 后端运行数据与编译产物
+backend/*.exe
+backend/*.obj
+backend/*.o
+backend/*.ilk
+backend/*.pdb
+backend/*.exp
+backend/*.lib
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+backend/*.sqlite
+backend/*.sqlite3
+backend/data/
+backend/uploads/
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tmp
+*.temp
