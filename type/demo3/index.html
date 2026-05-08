@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>定价方案</title>
+  <style>
+    /* ===== Reset & Base ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.6;
+      color: #1a1a2e;
+      background: #f5f6fa;
+    }
+
+    /* ===== Section ===== */
+    .pricing {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+
+    /* ===== Header ===== */
+    .pricing-header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    .pricing-header h1 {
+      font-size: clamp(1.75rem, 4vw, 2.25rem);
+      color: #111;
+      margin-bottom: 12px;
+    }
+    .pricing-header p {
+      font-size: clamp(1rem, 2vw, 1.125rem);
+      color: #555;
+      max-width: 520px;
+      margin: 0 auto 28px;
+    }
+    .btn-cta {
+      display: inline-block;
+      padding: 14px 36px;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #fff;
+      background: #4361ee;
+      border: 2px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+    .btn-cta:hover { background: #3451d1; }
+    .btn-cta:focus-visible {
+      outline: 3px solid #1a1a2e;
+      outline-offset: 3px;
+    }
+
+    /* ===== Card Grid ===== */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    /* ===== Card ===== */
+    .card {
+      position: relative;
+      background: #fff;
+      border-radius: 12px;
+      padding: 32px 24px;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .card:hover { box-shadow: 0 6px 28px rgba(0,0,0,0.10); }
+
+    /* Featured card */
+    .card--featured {
+      border: 2px solid #4361ee;
+      box-shadow: 0 6px 28px rgba(67,97,238,0.14);
+    }
+    .badge {
+      position: absolute;
+      top: -13px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #4361ee;
+      color: #fff;
+      font-size: 0.8125rem;
+      font-weight: 700;
+      padding: 5px 18px;
+      border-radius: 20px;
+      white-space: nowrap;
+    }
+
+    /* Card internals */
+    .card h2 {
+      font-size: 1.25rem;
+      color: #111;
+      margin-bottom: 6px;
+    }
+    .card .price {
+      font-size: 2.5rem;
+      font-weight: 800;
+      color: #111;
+      margin-bottom: 4px;
+    }
+    .card .price small {
+      font-size: 1rem;
+      font-weight: 400;
+      color: #777;
+    }
+    .card .desc {
+      font-size: 0.9375rem;
+      color: #666;
+      margin-bottom: 20px;
+    }
+    .card ul {
+      list-style: none;
+      flex: 1;
+      margin-bottom: 24px;
+    }
+    .card ul li {
+      position: relative;
+      padding-left: 24px;
+      margin-bottom: 10px;
+      font-size: 0.9375rem;
+      color: #333;
+    }
+    .card ul li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 6px;
+      width: 14px;
+      height: 14px;
+      background: #4361ee;
+      border-radius: 50%;
+    }
+    .card ul li::after {
+      content: "";
+      position: absolute;
+      left: 4px;
+      top: 9px;
+      width: 6px;
+      height: 4px;
+      border-left: 2px solid #fff;
+      border-bottom: 2px solid #fff;
+      transform: rotate(-45deg);
+    }
+    .btn-plan {
+      display: block;
+      width: 100%;
+      padding: 13px 0;
+      font-size: 1rem;
+      font-weight: 600;
+      text-align: center;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+    }
+    .btn-plan--outline {
+      color: #4361ee;
+      background: #fff;
+      border: 2px solid #4361ee;
+    }
+    .btn-plan--outline:hover { background: #4361ee; color: #fff; }
+    .btn-plan--solid {
+      color: #fff;
+      background: #4361ee;
+      border: 2px solid #4361ee;
+    }
+    .btn-plan--solid:hover { background: #3451d1; border-color: #3451d1; }
+    .btn-plan:focus-visible,
+    .btn-cta:focus-visible {
+      outline: 3px solid #1a1a2e;
+      outline-offset: 3px;
+    }
+
+    /* Footer note */
+    .pricing-footer {
+      text-align: center;
+      margin-top: 32px;
+      font-size: 0.875rem;
+      color: #888;
+    }
+    .pricing-footer a {
+      color: #4361ee;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .pricing-footer a:focus-visible {
+      outline: 3px solid #1a1a2e;
+      outline-offset: 3px;
+    }
+
+    /* ===== 2-col tablet break ===== */
+    @media (min-width: 600px) {
+      .pricing-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    /* ===== 3-col desktop break ===== */
+    @media (min-width: 900px) {
+      .pricing {
+        padding: 72px 32px 80px;
+      }
+      .pricing-grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .card--featured {
+        transform: translateY(-8px);
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <section class="pricing" aria-labelledby="pricing-title">
+
+    <!-- ===== Header ===== -->
+    <header class="pricing-header">
+      <h1 id="pricing-title">选择最适合你的方案</h1>
+      <p>无论你是个人开发者、小型团队还是大型组织，我们都有灵活的计划来助你成功。</p>
+      <a href="#" class="btn-cta">联系我们</a>
+    </header>
+
+    <!-- ===== Pricing Grid ===== -->
+    <div class="pricing-grid" role="list">
+
+      <!-- Starter -->
+      <article class="card" role="listitem">
+        <h2>入门版</h2>
+        <div class="price">¥29<span class="price"><small>/月</small></span></div>
+        <p class="desc">适合个人开发者快速上手。</p>
+        <ul>
+          <li>每月 5,000 次 API 调用</li>
+          <li>5 GB 存储空间</li>
+          <li>基础数据分析面板</li>
+          <li>邮件工单支持</li>
+          <li>1 个项目协作</li>
+        </ul>
+        <button class="btn-plan btn-plan--outline" type="button">选择计划</button>
+      </article>
+
+      <!-- Professional (Featured) -->
+      <article class="card card--featured" role="listitem">
+        <span class="badge" aria-label="最受欢迎">🔥 最受欢迎</span>
+        <h2>专业版</h2>
+        <div class="price">¥99<span class="price"><small>/月</small></span></div>
+        <p class="desc">为成长中的团队提供更强能力。</p>
+        <ul>
+          <li>每月 50,000 次 API 调用</li>
+          <li>100 GB 存储空间</li>
+          <li>高级数据分析 + 报表导出</li>
+          <li>优先在线客服支持</li>
+          <li>无限项目协作</li>
+        </ul>
+        <button class="btn-plan btn-plan--solid" type="button">选择计划</button>
+      </article>
+
+      <!-- Team -->
+      <article class="card" role="listitem">
+        <h2>团队版</h2>
+        <div class="price">¥299<span class="price"><small>/月</small></span></div>
+        <p class="desc">为大型组织提供企业级能力。</p>
+        <ul>
+          <li>无限 API 调用</li>
+          <li>1 TB 存储空间</li>
+          <li>自定义数据看板 + 权限管理</li>
+          <li>专属客户经理 7×24 支持</li>
+          <li>SSO + 审计日志 + SLA 保障</li>
+        </ul>
+        <button class="btn-plan btn-plan--outline" type="button">选择计划</button>
+      </article>
+    </div>
+
+    <p class="pricing-footer">
+      所有方案均包含 14 天免费试用，<a href="#">无需信用卡</a>。
+    </p>
+
+  </section>
+
+</body>
+</html>

@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="选择最适合您的 SaaS 定价方案 - Starter、Professional 或 Enterprise">
+    <title>定价方案 - 选择适合您的计划</title>
+    <style>
+        /* ==================== CSS Variables - Design System ==================== */
+        :root {
+            /* Primary Colors */
+            --color-primary: #0066ff;
+            --color-primary-hover: #0052cc;
+            --color-primary-active: #0047b3;
+            --color-primary-light: #3385ff;
+            --color-primary-lighter: #e6f0ff;
+
+            /* Secondary Colors */
+            --color-secondary: #00ffff;
+            --color-secondary-hover: #00e6e6;
+            --color-secondary-light: #80ffff;
+
+            /* Neutral Colors */
+            --color-dark: #1e1e1e;
+            --color-dark-lighter: #2a2a2a;
+            --color-dark-lightest: #3a3a3a;
+            --color-white: #ffffff;
+            --color-gray-50: #fafafa;
+            --color-gray-100: #f5f5f5;
+            --color-gray-200: #e5e5e5;
+            --color-gray-300: #d4d4d4;
+            --color-gray-400: #a3a3a3;
+            --color-gray-500: #737373;
+            --color-gray-600: #525252;
+            --color-gray-700: #404040;
+            --color-gray-800: #262626;
+            --color-gray-900: #171717;
+
+            /* Semantic Colors */
+            --color-success: #10b981;
+            --color-info: #3b82f6;
+
+            /* Typography */
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            --text-xs: 0.75rem;
+            --text-sm: 0.875rem;
+            --text-base: 1rem;
+            --text-lg: 1.125rem;
+            --text-xl: 1.25rem;
+            --text-2xl: 1.5rem;
+            --text-3xl: 1.875rem;
+            --text-4xl: 2.25rem;
+            --text-5xl: 3rem;
+            --font-light: 300;
+            --font-normal: 400;
+            --font-medium: 500;
+            --font-semibold: 600;
+            --font-bold: 700;
+            --leading-tight: 1.25;
+            --leading-normal: 1.5;
+            --leading-relaxed: 1.625;
+
+            /* Spacing (4px base) */
+            --space-1: 0.25rem;
+            --space-2: 0.5rem;
+            --space-3: 0.75rem;
+            --space-4: 1rem;
+            --space-5: 1.25rem;
+            --space-6: 1.5rem;
+            --space-8: 2rem;
+            --space-10: 2.5rem;
+            --space-12: 3rem;
+            --space-16: 4rem;
+            --space-20: 5rem;
+
+            /* Border Radius */
+            --radius-sm: 0.125rem;
+            --radius-base: 0.25rem;
+            --radius-md: 0.375rem;
+            --radius-lg: 0.5rem;
+            --radius-xl: 0.75rem;
+            --radius-2xl: 1rem;
+            --radius-3xl: 1.5rem;
+
+            /* Shadows */
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-base: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+
+            /* Glow Effects */
+            --glow-primary: 0 0 20px rgba(0, 102, 255, 0.3);
+            --glow-primary-strong: 0 0 30px rgba(0, 102, 255, 0.5);
+
+            /* Transitions */
+            --duration-fast: 150ms;
+            --duration-base: 200ms;
+            --duration-slow: 300ms;
+            --ease-out: cubic-bezier(0, 0, 0.2, 1);
+            --transition-all: all var(--duration-base) var(--ease-out);
+        }
+
+        /* ==================== Base Styles ==================== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            font-size: var(--text-base);
+            line-height: var(--leading-normal);
+            color: var(--color-gray-900);
+            background: linear-gradient(135deg, var(--color-gray-50) 0%, var(--color-white) 100%);
+            min-height: 100vh;
+            padding: var(--space-8) var(--space-4);
+        }
+
+        /* ==================== Container ==================== */
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 0 var(--space-4);
+        }
+
+        /* ==================== Header ==================== */
+        .pricing-header {
+            text-align: center;
+            margin-bottom: var(--space-16);
+        }
+
+        .pricing-header h1 {
+            font-size: var(--text-4xl);
+            font-weight: var(--font-bold);
+            color: var(--color-gray-900);
+            margin-bottom: var(--space-4);
+            line-height: var(--leading-tight);
+        }
+
+        .pricing-header p {
+            font-size: var(--text-lg);
+            color: var(--color-gray-600);
+            max-width: 600px;
+            margin: 0 auto;
+            line-height: var(--leading-relaxed);
+        }
+
+        /* ==================== Pricing Grid ==================== */
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: var(--space-8);
+            margin-bottom: var(--space-16);
+        }
+
+        @media (min-width: 768px) {
+            .pricing-grid {
+                grid-template-columns: repeat(3, 1fr);
+                gap: var(--space-6);
+            }
+        }
+
+        /* ==================== Pricing Card ==================== */
+        .pricing-card {
+            background: var(--color-white);
+            border: 2px solid var(--color-gray-200);
+            border-radius: var(--radius-2xl);
+            padding: var(--space-8);
+            position: relative;
+            transition: var(--transition-all);
+            box-shadow: var(--shadow-base);
+        }
+
+        .pricing-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* Featured Card (Professional) */
+        .pricing-card.featured {
+            border-color: var(--color-primary);
+            box-shadow: var(--shadow-md), var(--glow-primary);
+            transform: scale(1.05);
+        }
+
+        .pricing-card.featured:hover {
+            transform: scale(1.05) translateY(-4px);
+            box-shadow: var(--shadow-xl), var(--glow-primary-strong);
+        }
+
+        /* Enterprise Card (Dark) */
+        .pricing-card.dark {
+            background: var(--color-dark);
+            border-color: var(--color-dark-lightest);
+            color: var(--color-white);
+        }
+
+        .pricing-card.dark .card-title {
+            color: var(--color-white);
+        }
+
+        .pricing-card.dark .card-description {
+            color: var(--color-gray-400);
+        }
+
+        .pricing-card.dark .feature-item {
+            color: var(--color-gray-300);
+        }
+
+        .pricing-card.dark .feature-icon {
+            color: var(--color-secondary);
+        }
+
+        /* Badge */
+        .badge {
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--color-primary);
+            color: var(--color-white);
+            font-size: var(--text-xs);
+            font-weight: var(--font-semibold);
+            padding: var(--space-1) var(--space-4);
+            border-radius: var(--radius-2xl);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            box-shadow: var(--shadow-md);
+        }
+
+        /* Card Header */
+        .card-header {
+            text-align: center;
+            margin-bottom: var(--space-6);
+            padding-bottom: var(--space-6);
+            border-bottom: 1px solid var(--color-gray-200);
+        }
+
+        .pricing-card.dark .card-header {
+            border-bottom-color: var(--color-dark-lightest);
+        }
+
+        .card-title {
+            font-size: var(--text-sm);
+            font-weight: var(--font-semibold);
+            color: var(--color-gray-600);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: var(--space-3);
+        }
+
+        .card-description {
+            font-size: var(--text-sm);
+            color: var(--color-gray-500);
+            line-height: var(--leading-relaxed);
+        }
+
+        /* Pricing */
+        .pricing {
+            text-align: center;
+            margin-bottom: var(--space-8);
+        }
+
+        .price-wrapper {
+            display: flex;
+            align-items: baseline;
+            justify-content: center;
+            gap: var(--space-1);
+            margin-bottom: var(--space-2);
+        }
+
+        .currency {
+            font-size: var(--text-xl);
+            font-weight: var(--font-light);
+            color: var(--color-gray-600);
+        }
+
+        .pricing-card.dark .currency {
+            color: var(--color-gray-400);
+        }
+
+        .amount {
+            font-size: var(--text-5xl);
+            font-weight: var(--font-bold);
+            color: var(--color-gray-900);
+            line-height: 1;
+        }
+
+        .pricing-card.featured .amount {
+            color: var(--color-primary);
+        }
+
+        .pricing-card.dark .amount {
+            color: var(--color-white);
+        }
+
+        .period {
+            font-size: var(--text-base);
+            color: var(--color-gray-500);
+        }
+
+        .pricing-card.dark .period {
+            color: var(--color-gray-400);
+        }
+
+        /* Features List */
+        .features-list {
+            list-style: none;
+            margin-bottom: var(--space-8);
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: flex-start;
+            gap: var(--space-3);
+            padding: var(--space-3) 0;
+            font-size: var(--text-sm);
+            color: var(--color-gray-700);
+            line-height: var(--leading-relaxed);
+        }
+
+        .feature-icon {
+            flex-shrink: 0;
+            width: 20px;
+            height: 20px;
+            color: var(--color-success);
+            margin-top: 2px;
+        }
+
+        .pricing-card.featured .feature-icon {
+            color: var(--color-primary);
+        }
+
+        /* CTA Button */
+        .cta-button {
+            display: block;
+            width: 100%;
+            padding: var(--space-4) var(--space-6);
+            font-size: var(--text-base);
+            font-weight: var(--font-semibold);
+            text-align: center;
+            text-decoration: none;
+            border: none;
+            border-radius: var(--radius-xl);
+            cursor: pointer;
+            transition: var(--transition-all);
+            font-family: inherit;
+        }
+
+        .cta-button:focus-visible {
+            outline: 2px solid var(--color-primary);
+            outline-offset: 2px;
+        }
+
+        /* Primary Button */
+        .cta-button.primary {
+            background: var(--color-primary);
+            color: var(--color-white);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .cta-button.primary:hover {
+            background: var(--color-primary-hover);
+            box-shadow: var(--shadow-md), var(--glow-primary);
+            transform: translateY(-1px);
+        }
+
+        .cta-button.primary:active {
+            background: var(--color-primary-active);
+            transform: translateY(0);
+        }
+
+        /* Secondary Button */
+        .cta-button.secondary {
+            background: transparent;
+            color: var(--color-primary);
+            border: 2px solid var(--color-primary);
+        }
+
+        .cta-button.secondary:hover {
+            background: var(--color-primary-lighter);
+            border-color: var(--color-primary-hover);
+        }
+
+        /* Dark Button */
+        .cta-button.dark {
+            background: var(--color-secondary);
+            color: var(--color-dark);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .cta-button.dark:hover {
+            background: var(--color-secondary-hover);
+            box-shadow: var(--shadow-md), 0 0 20px rgba(0, 255, 255, 0.3);
+            transform: translateY(-1px);
+        }
+
+        /* ==================== Footer ==================== */
+        .pricing-footer {
+            text-align: center;
+            padding-top: var(--space-12);
+            border-top: 1px solid var(--color-gray-200);
+        }
+
+        .pricing-footer p {
+            font-size: var(--text-sm);
+            color: var(--color-gray-600);
+            margin-bottom: var(--space-4);
+        }
+
+        .pricing-footer a {
+            color: var(--color-primary);
+            text-decoration: none;
+            font-weight: var(--font-medium);
+            transition: var(--transition-all);
+        }
+
+        .pricing-footer a:hover {
+            color: var(--color-primary-hover);
+            text-decoration: underline;
+        }
+
+        .pricing-footer a:focus-visible {
+            outline: 2px solid var(--color-primary);
+            outline-offset: 2px;
+            border-radius: var(--radius-sm);
+        }
+
+        /* ==================== Responsive Adjustments ==================== */
+        @media (max-width: 767px) {
+            .pricing-header h1 {
+                font-size: var(--text-3xl);
+            }
+
+            .pricing-header p {
+                font-size: var(--text-base);
+            }
+
+            .pricing-card.featured {
+                transform: scale(1);
+            }
+
+            .pricing-card.featured:hover {
+                transform: translateY(-4px);
+            }
+
+            .amount {
+                font-size: var(--text-4xl);
+            }
+        }
+
+        /* ==================== Accessibility ==================== */
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+
+        /* Screen reader only */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border-width: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="pricing-header">
+            <h1>选择适合您的定价方案</h1>
+            <p>无论您是初创企业还是大型组织，我们都有适合您需求的完美方案。所有方案均包含 14 天免费试用。</p>
+        </header>
+
+        <!-- Pricing Grid -->
+        <div class="pricing-grid">
+            <!-- Starter Plan -->
+            <article class="pricing-card" role="article" aria-labelledby="starter-title">
+                <div class="card-header">
+                    <h2 id="starter-title" class="card-title">Starter</h2>
+                    <p class="card-description">适合个人和小型团队</p>
+                </div>
+
+                <div class="pricing">
+                    <div class="price-wrapper">
+                        <span class="currency" aria-label="美元">$</span>
+                        <span class="amount">29</span>
+                    </div>
+                    <p class="period">每月</p>
+                </div>
+
+                <ul class="features-list">
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>最多 5 个用户</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>10 GB 存储空间</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>基础分析功能</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>邮件支持</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>移动应用访问</span>
+                    </li>
+                </ul>
+
+                <a href="#" class="cta-button secondary" role="button">开始免费试用</a>
+            </article>
+
+            <!-- Professional Plan (Featured) -->
+            <article class="pricing-card featured" role="article" aria-labelledby="professional-title">
+                <span class="badge">最受欢迎</span>
+
+                <div class="card-header">
+                    <h2 id="professional-title" class="card-title">Professional</h2>
+                    <p class="card-description">适合成长中的企业</p>
+                </div>
+
+                <div class="pricing">
+                    <div class="price-wrapper">
+                        <span class="currency" aria-label="美元">$</span>
+                        <span class="amount">79</span>
+                    </div>
+                    <p class="period">每月</p>
+                </div>
+
+                <ul class="features-list">
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>最多 20 个用户</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>100 GB 存储空间</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>高级分析和报告</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>优先邮件和聊天支持</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>API 访问</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>自定义集成</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>团队协作工具</span>
+                    </li>
+                </ul>
+
+                <a href="#" class="cta-button primary" role="button">开始免费试用</a>
+            </article>
+
+            <!-- Enterprise Plan -->
+            <article class="pricing-card dark" role="article" aria-labelledby="enterprise-title">
+                <div class="card-header">
+                    <h2 id="enterprise-title" class="card-title">Enterprise</h2>
+                    <p class="card-description">适合大型组织</p>
+                </div>
+
+                <div class="pricing">
+                    <div class="price-wrapper">
+                        <span class="currency" aria-label="美元">$</span>
+                        <span class="amount">199</span>
+                    </div>
+                    <p class="period">每月</p>
+                </div>
+
+                <ul class="features-list">
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>无限用户</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>无限存储空间</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>企业级分析和 BI</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>24/7 专属客户经理</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>高级 API 和 Webhooks</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>SSO 和高级安全</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>定制培训和入职</span>
+                    </li>
+                    <li class="feature-item">
+                        <svg class="feature-icon" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>SLA 保证</span>
+                    </li>
+                </ul>
+
+                <a href="#" class="cta-button dark" role="button">联系销售</a>
+            </article>
+        </div>
+
+        <!-- Footer -->
+        <footer class="pricing-footer">
+            <p>所有方案均包含 14 天免费试用，无需信用卡。</p>
+            <p>需要帮助选择？<a href="#" aria-label="联系我们的销售团队">联系我们的销售团队</a> 或 <a href="#" aria-label="查看功能对比">查看完整功能对比</a></p>
+        </footer>
+    </div>
+</body>
+</html>

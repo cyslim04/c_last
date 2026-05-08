@@ -1,0 +1,41 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "C:\\Users\\yce\\Desktop\\c_last\\contracts\\contracts\\TrustWorkProof.sol": {
+      "lastModificationDate": 1776063918194,
+      "contentHash": "274ee88edc209e6d6fdf685643777fe0",
+      "sourceName": "contracts/TrustWorkProof.sol",
+      "solcConfig": {
+        "version": "0.8.24",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.24"
+      ],
+      "artifacts": [
+        "TrustWorkProof"
+      ]
+    }
+  }
+}

@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>定价方案</title>
+<style>
+/* ============================================================
+   DESIGN TOKENS
+   ============================================================ */
+:root {
+  /* Colors — Primary */
+  --color-primary:        #4f46e5;
+  --color-primary-hover:  #4338ca;
+  --color-primary-light:  #eef2ff;
+
+  /* Colors — Neutral */
+  --color-bg:             #f8fafc;
+  --color-surface:        #ffffff;
+  --color-text:           #1e293b;
+  --color-text-muted:     #64748b;
+  --color-border:         #e2e8f0;
+
+  /* Colors — Semantic */
+  --color-popular:        #f59e0b;
+  --color-popular-light:  #fffbeb;
+
+  /* Typography — System font stack */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Spacing (4px base) */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Border radius */
+  --radius-md:  0.5rem;
+  --radius-lg:  0.75rem;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.04);
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-base: 200ms ease;
+}
+
+/* ============================================================
+   RESET
+   ============================================================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8) var(--space-4);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+/* ============================================================
+   SECTION — Pricing
+   ============================================================ */
+.pricing {
+  width: 100%;
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+/* --- Header --- */
+.pricing__header {
+  text-align: center;
+  margin-bottom: var(--space-12);
+}
+
+.pricing__eyebrow {
+  display: inline-block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  margin-bottom: var(--space-4);
+}
+
+.pricing__title {
+  font-size: clamp(1.75rem, 5vw, 3rem);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  margin-bottom: var(--space-4);
+}
+
+.pricing__subtitle {
+  font-size: 1.125rem;
+  color: var(--color-text-muted);
+  max-width: 36ch;
+  margin: 0 auto var(--space-8);
+}
+
+.pricing__cta-main {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-6);
+  font-size: 1rem;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--color-primary);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.pricing__cta-main:hover {
+  background: var(--color-primary-hover);
+  box-shadow: var(--shadow-md);
+}
+
+.pricing__cta-main:active {
+  transform: scale(0.97);
+}
+
+/* --- Cards grid --- */
+.pricing__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (min-width: 48rem) {
+  .pricing__grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* --- Card --- */
+.card {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  transition: box-shadow var(--transition-base), border-color var(--transition-base);
+}
+
+.card:hover {
+  box-shadow: var(--shadow-lg);
+}
+
+.card--featured {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+@media (min-width: 48rem) {
+  .card--featured {
+    transform: scale(1.05);
+  }
+}
+
+/* --- Badge --- */
+.card__badge {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #92400e;
+  background: var(--color-popular);
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+/* --- Card content --- */
+.card__tier {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.card__price {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+.card__price-amount {
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--color-text);
+  line-height: 1;
+}
+
+.card__price-period {
+  font-size: 0.9375rem;
+  color: var(--color-text-muted);
+}
+
+.card__desc {
+  font-size: 0.9375rem;
+  color: var(--color-text-muted);
+}
+
+.card__features {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+}
+
+.card__feature {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  font-size: 0.9375rem;
+  color: var(--color-text);
+  line-height: 1.45;
+}
+
+.card__feature-icon {
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.125rem;
+  color: var(--color-primary);
+}
+
+.card__feature-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.card__cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-3) var(--space-6);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-decoration: none;
+  border: 2px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.card__cta:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.card__cta:active {
+  transform: scale(0.98);
+}
+
+.card__cta--primary {
+  background: var(--color-primary);
+  color: #ffffff;
+  border-color: var(--color-primary);
+}
+
+.card__cta--primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+/* ============================================================
+   SKIP LINK
+   ============================================================ */
+.skip-link {
+  position: fixed;
+  top: var(--space-4);
+  left: var(--space-4);
+  z-index: 9999;
+  padding: var(--space-2) var(--space-4);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--color-primary);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transform: translateY(-200%);
+  transition: transform var(--transition-fast);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+</style>
+</head>
+<body>
+
+<!-- Skip link for keyboard users -->
+<a href="#pricing-cards" class="skip-link">跳转到定价方案</a>
+
+<main>
+  <section class="pricing" aria-labelledby="pricing-heading">
+
+    <!-- Header -->
+    <header class="pricing__header">
+      <p class="pricing__eyebrow">定价方案</p>
+      <h1 id="pricing-heading" class="pricing__title">选择适合您的计划</h1>
+      <p class="pricing__subtitle">
+        无论是个人项目还是团队协作，我们都有灵活的方案满足您的需求。免费试用 14 天，随时取消。
+      </p>
+      <a href="#pricing-cards" class="pricing__cta-main">查看全部方案</a>
+    </header>
+
+    <!-- Cards -->
+    <div id="pricing-cards" class="pricing__grid">
+
+      <!-- Card 1 — Starter -->
+      <article class="card" aria-labelledby="tier-starter">
+        <h2 id="tier-starter" class="card__tier">入门版</h2>
+        <div class="card__price">
+          <span class="card__price-amount">¥29</span>
+          <span class="card__price-period">/月</span>
+        </div>
+        <p class="card__desc">适合个人开发者和小型项目，快速上手。</p>
+        <ul class="card__features" aria-label="入门版功能列表">
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            5 个项目空间
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            10GB 存储空间
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            基础 API 接入
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            邮件技术支持
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            社区论坛访问
+          </li>
+        </ul>
+        <a href="#" class="card__cta" role="button">选择入门版</a>
+      </article>
+
+      <!-- Card 2 — Pro (Featured) -->
+      <article class="card card--featured" aria-labelledby="tier-pro">
+        <span class="card__badge" aria-label="最受欢迎">⭐ 最受欢迎</span>
+        <h2 id="tier-pro" class="card__tier">专业版</h2>
+        <div class="card__price">
+          <span class="card__price-amount">¥79</span>
+          <span class="card__price-period">/月</span>
+        </div>
+        <p class="card__desc">适合专业团队和成长型业务，功能全面。</p>
+        <ul class="card__features" aria-label="专业版功能列表">
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            无限项目空间
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            100GB 存储空间
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            高级 API + Webhooks
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            优先客服支持
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            团队协作 + 权限管理
+          </li>
+        </ul>
+        <a href="#" class="card__cta card__cta--primary" role="button">选择专业版</a>
+      </article>
+
+      <!-- Card 3 — Team -->
+      <article class="card" aria-labelledby="tier-team">
+        <h2 id="tier-team" class="card__tier">团队版</h2>
+        <div class="card__price">
+          <span class="card__price-amount">¥199</span>
+          <span class="card__price-period">/月</span>
+        </div>
+        <p class="card__desc">适合大型组织和企业级需求，安全可靠。</p>
+        <ul class="card__features" aria-label="团队版功能列表">
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            不限项目与成员
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            1TB 存储空间
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            专属 API 网关
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            7×24 小时专属客服
+          </li>
+          <li class="card__feature">
+            <span class="card__feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+            </span>
+            SSO + 审计日志
+          </li>
+        </ul>
+        <a href="#" class="card__cta" role="button">选择团队版</a>
+      </article>
+
+    </div>
+  </section>
+</main>
+
+</body>
+</html>
