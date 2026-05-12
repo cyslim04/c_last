@@ -123,9 +123,12 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="个人中心"
+      eyebrow="身份资料"
+      title="把头像、账号、角色与安全操作收进一张统一的数字身份卡。"
+      description="个人中心负责维护当前身份的展示信息、登录资料和密码安全，让钱包状态与账号资料在同一处保持清晰。"
       :tone="auth.role"
       variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="saveProfile">保存资料</button>

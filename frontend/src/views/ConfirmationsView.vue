@@ -134,9 +134,12 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="客户确认"
+      eyebrow="客户工作区"
+      title="在阶段材料充分可见的前提下做出确认结论。"
+      description="这里不只展示一个交付条目，而是把阶段交付、同阶段工时和确认后的流向变化放进同一块判断面板。"
       tone="client"
       variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="loadStages">刷新确认状态</button>

@@ -153,9 +153,12 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="项目管理"
+      eyebrow="管理员工作区"
+      title="在一个统一的浅色项目台里筛选、分组和追踪全部项目状态。"
+      description="项目管理不再只是一个控制台列表，而是围绕状态分层、角色筛选和流程入口组织出来的全局项目台。"
       tone="admin"
       variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="loadData" :disabled="loading">

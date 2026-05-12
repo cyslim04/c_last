@@ -2,8 +2,8 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "C:\\Users\\yce\\Desktop\\c_last\\contracts\\contracts\\TrustWorkProof.sol": {
-      "lastModificationDate": 1776063918194,
-      "contentHash": "274ee88edc209e6d6fdf685643777fe0",
+      "lastModificationDate": 1778241493865,
+      "contentHash": "f3ab6800b0042967bdc12af4e76ae8db",
       "sourceName": "contracts/TrustWorkProof.sol",
       "solcConfig": {
         "version": "0.8.24",

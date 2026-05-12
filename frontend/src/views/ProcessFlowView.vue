@@ -281,6 +281,29 @@ const snapshotGateRows = computed(() => {
   ];
 });
 
+const heroStats = computed(() => [
+  {
+    label: "高层节点",
+    value: globalOverviewNodes.value.length,
+    helper: "用于说明整条协作链路结构的关键节点数量。",
+  },
+  {
+    label: "阶段总数",
+    value: orderedStages.value.length,
+    helper: "当前项目已经形成或仍在推进的阶段数量。",
+  },
+  {
+    label: "当前视图",
+    value: viewModes.find((item) => item.key === viewMode.value)?.label || "高层流程",
+    helper: "高层流程、阶段循环与快照三种视图共用同一项目上下文。",
+  },
+  {
+    label: "总审计门禁",
+    value: flow.value.finalAuditStatus?.eligible ? "已满足" : "未满足",
+    helper: flow.value.finalAuditStatus?.blockingReason || "当前项目已满足最终总审计条件。",
+  },
+]);
+
 function compactText(value, max = 28) {
   if (!value) {
     return "";
@@ -539,7 +562,15 @@ onBeforeUnmount(() => {
 
 <template>
   <AppShell>
-    <PageHero title="流程总览" :tone="auth.role" variant="minimal" class="process-flow-hero">
+    <PageHero
+      eyebrow="全局流程"
+      title="把高层结构、阶段循环与最终门禁收敛到一张流程总览里。"
+      description="流程总览页不是装饰性流程图，而是把项目切换、角色责任、阶段推进和总审计条件放在同一张工作地图里解释清楚。"
+      :tone="auth.role"
+      variant="minimal"
+      :stats="heroStats"
+      class="process-flow-hero"
+    >
       <template #actions>
         <div class="process-flow-toolbar">
           <div ref="projectMenuRef" class="project-switcher project-switcher-hero" :class="{ open: projectMenuOpen }">
@@ -608,6 +639,12 @@ onBeforeUnmount(() => {
           </div>
         </Teleport>
       </template>
+
+      <article class="hero-side-card">
+        <div class="hero-kicker">当前项目</div>
+        <strong>{{ selectedProjectLabel }}</strong>
+        <p>{{ selectedProjectMeta }}</p>
+      </article>
     </PageHero>
 
     <section v-if="viewMode === 'global'" class="panel reveal-card process-map-panel">

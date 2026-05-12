@@ -135,9 +135,12 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="交付物"
+      eyebrow="开发工作区"
+      title="把版本、文件与阶段说明组织成可确认的交付材料。"
+      description="交付页负责把文件版本、摘要、哈希和后续存证动作放在一起，避免交付说明与确认链路断开。"
       tone="developer"
       variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="saveDeliverable">登记交付物</button>
@@ -190,7 +193,7 @@ onBeforeUnmount(() => experience.resetPageContext());
 
         <div class="state-explain-card">
           <span>提交后会发生什么</span>
-          <strong>提交后进入当前阶段。</strong>
+          <strong>提交后进入当前阶段的客户确认链路。</strong>
         </div>
 
         <p class="feedback mono">{{ fileHash ? `文件哈希：${fileHash}` : "等待生成 SHA-256 哈希。" }}</p>
@@ -204,6 +207,7 @@ onBeforeUnmount(() => experience.resetPageContext());
             <div class="eyebrow">交付历史</div>
             <h3>交付记录</h3>
           </div>
+          <span class="pill subtle">{{ items.length }} 条已登记交付</span>
         </div>
 
         <div class="brand-project-grid">

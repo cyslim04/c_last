@@ -192,9 +192,11 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="审计管理"
+      eyebrow="管理员工作区"
+      title="把阶段决策与最终审计组织成可解释的可信结论。"
+      description="审计页不只是执行通过或驳回，而是把当前待决事项、审计准备度、历史留痕和最终结论组织进同一块业务舞台。"
       tone="admin"
-      variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="loadAudit">刷新审计态势</button>
@@ -225,12 +227,12 @@ onBeforeUnmount(() => experience.resetPageContext());
       </div>
     </PageHero>
 
-    <div class="showcase-grid showcase-grid-audit">
+    <section class="showcase-grid showcase-grid-audit">
       <section class="panel reveal-card">
         <div class="section-heading">
           <div>
-            <div class="eyebrow">阶段审计</div>
-            <h3>阶段审计</h3>
+            <div class="eyebrow">阶段决策</div>
+            <h3>待阶段审计</h3>
           </div>
           <button class="button" type="button" @click="openStageAudit" :disabled="submitting || !selectedStage">
             阶段审计
@@ -264,8 +266,8 @@ onBeforeUnmount(() => experience.resetPageContext());
       <section class="panel reveal-card">
         <div class="section-heading">
           <div>
-            <div class="eyebrow">最终审计</div>
-            <h3>总审计</h3>
+            <div class="eyebrow">最终决策</div>
+            <h3>待总审计项目</h3>
           </div>
           <button class="button" type="button" @click="openFinalAudit" :disabled="submitting || !selectedFinalProject">
             最终总审计
@@ -294,13 +296,13 @@ onBeforeUnmount(() => experience.resetPageContext());
           <p>暂无待总审计项目。</p>
         </div>
       </section>
-    </div>
+    </section>
 
-    <section class="panel reveal-card">
+    <section class="panel reveal-card stride-section">
       <div class="section-heading">
         <div>
           <div class="eyebrow">审计总览</div>
-          <h3>项目</h3>
+          <h3>项目审计态势</h3>
         </div>
       </div>
 
@@ -323,7 +325,7 @@ onBeforeUnmount(() => experience.resetPageContext());
       </div>
     </section>
 
-    <div class="showcase-grid showcase-grid-audit-bottom">
+    <section class="showcase-grid showcase-grid-audit-bottom">
       <section class="panel reveal-card">
         <div class="section-heading">
           <div>
@@ -363,7 +365,7 @@ onBeforeUnmount(() => experience.resetPageContext());
         <div class="section-heading">
           <div>
             <div class="eyebrow">后台留痕</div>
-            <h3>日志</h3>
+            <h3>后台日志</h3>
           </div>
           <button class="secondary-button" type="button" @click="showLogs = !showLogs">
             {{ showLogs ? "收起日志" : "展开日志" }}
@@ -380,7 +382,7 @@ onBeforeUnmount(() => experience.resetPageContext());
           </article>
         </div>
       </section>
-    </div>
+    </section>
 
     <p v-if="actionMessage" class="feedback success-text">{{ actionMessage }}</p>
     <p v-if="errorMessage" class="feedback error-text">{{ errorMessage }}</p>

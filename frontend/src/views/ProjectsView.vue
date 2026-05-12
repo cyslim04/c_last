@@ -26,17 +26,17 @@ const heroStats = computed(() => [
   {
     label: "在线项目",
     value: projects.value.length,
-    helper: "当前系统内可被展示和推进的项目总数",
+    helper: "当前系统内可被展示和推进的项目总数。",
   },
   {
     label: "开发者资源",
     value: developers.value.length,
-    helper: "可分配到新项目的开发者账号",
+    helper: "当前可被分配到新项目中的开发者账号数量。",
   },
   {
     label: "客户资源",
     value: clients.value.length,
-    helper: "可绑定到项目协作链路中的客户账号",
+    helper: "可绑定到项目协作链路中的客户身份数量。",
   },
 ]);
 
@@ -79,7 +79,7 @@ watchEffect(() => {
   experience.setPageContext({
     projectName: "新增项目",
     stageLabel: `${projects.value.length} 个项目在线`,
-    cue: "这个页面只负责创建新项目，不再承担项目状态查看和分类筛选。",
+    cue: "项目创建页需要像一个业务落地页，而不是单纯的控制台弹窗替代品。",
     tone: "admin",
   });
 });
@@ -96,27 +96,29 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="新增项目"
+      eyebrow="项目创建"
+      title="为下一条可信协作链路建立项目入口。"
+      description="项目一旦建立，就会连接开发者、客户、阶段流程与审计闭环。这个页面不只是录入表单，而是整条链路的起点。"
       tone="admin"
-      variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="createProject">保存项目</button>
       </template>
 
       <article class="hero-side-card">
-        <div class="hero-kicker">创建提示</div>
-        <strong>{{ form.name || "先为新项目定义清晰目标" }}</strong>
-        <p>项目创建成功后，会自动进入“项目管理”页面可筛选的项目池，并在首页、流程总览、审计页中同步可见。</p>
+        <div class="hero-kicker">当前草稿</div>
+        <strong>{{ form.name || "先定义项目名称" }}</strong>
+        <p>项目创建成功后，会进入项目管理、流程总览与审计页面同步展示，成为后续协作和留痕的共同对象。</p>
       </article>
     </PageHero>
 
-    <div class="showcase-grid showcase-grid-secondary">
+    <section class="showcase-grid showcase-grid-secondary">
       <section class="panel reveal-card">
         <div class="section-heading">
           <div>
-            <div class="eyebrow">新建项目</div>
-            <h3>新建项目</h3>
+            <div class="eyebrow">录入区</div>
+            <h3>填写新项目</h3>
           </div>
         </div>
 
@@ -141,7 +143,7 @@ onBeforeUnmount(() => experience.resetPageContext());
 
         <div class="state-explain-card">
           <span>提交后会发生什么</span>
-          <strong>创建后进入项目管理。</strong>
+          <strong>创建后进入项目池。</strong>
         </div>
 
         <p v-if="message" class="feedback success-text">{{ message }}</p>
@@ -151,8 +153,8 @@ onBeforeUnmount(() => experience.resetPageContext());
       <section class="panel reveal-card">
         <div class="section-heading">
           <div>
-            <div class="eyebrow">最近项目</div>
-            <h3>最近项目</h3>
+            <div class="eyebrow">最近建立</div>
+            <h3>最新项目</h3>
           </div>
         </div>
 
@@ -169,6 +171,6 @@ onBeforeUnmount(() => experience.resetPageContext());
           </article>
         </div>
       </section>
-    </div>
+    </section>
   </AppShell>
 </template>

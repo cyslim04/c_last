@@ -216,9 +216,12 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="成员管理"
+      eyebrow="管理员工作区"
+      title="把成员资源从普通列表收敛成可编排、可维护的角色资产。"
+      description="成员管理页不仅负责创建账号，还要把状态、角色分工、资料维护和快捷登录联动保持在同一套后台语言里。"
       tone="admin"
       variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <div class="filter-chip-row">

@@ -120,25 +120,33 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="auth-layout auth-layout-stage auth-layout-compact">
-    <section class="auth-hero auth-hero-stage auth-hero-simple">
-      <h1>Trust Work</h1>
-      <p>选择快捷账号或手动输入账号密码后进入系统。</p>
+  <div class="auth-layout">
+    <section class="auth-hero">
+      <div>
+        <div class="hero-kicker">Stride 化入口页</div>
+        <h1>让协作过程本身成为可信证据。</h1>
+        <p>
+          Trust Work 将工时、交付、客户确认与管理员审计组织进同一套可操作前端。登录后你进入的不只是系统后台，
+          而是一条可解释、可展示、可回写的协作链路。
+        </p>
+      </div>
     </section>
 
-    <section class="auth-panel auth-panel-stage">
-      <div class="panel auth-card auth-card-stage">
-        <div class="page-header compact">
-          <div class="auth-card-head">
-            <div>
-              <h2>登录</h2>
-            </div>
+    <section class="auth-panel">
+      <div class="panel auth-card">
+        <div class="auth-card-head">
+          <div>
+            <div class="eyebrow">登录入口</div>
+            <h2>选择身份并进入系统</h2>
           </div>
         </div>
 
         <div ref="quickLoginRef" class="quick-login-compact-panel">
-          <div class="quick-login-compact-head">
-            <div class="eyebrow">快捷角色</div>
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">快捷角色</div>
+              <h3>快捷账号</h3>
+            </div>
           </div>
 
           <div class="quick-login-compact-grid">
@@ -188,8 +196,8 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="login-tip-card">
-          <div class="hero-kicker">登录提示</div>
+        <div class="state-explain-card">
+          <span>登录说明</span>
           <strong>快捷账号只会填充表单，不会自动登录。</strong>
         </div>
 

@@ -29,17 +29,17 @@ const heroStats = computed(() => [
   {
     label: "工时记录",
     value: items.value.length,
-    helper: "当前角色可见的工时历史总数",
+    helper: "当前角色可见的工时历史总数。",
   },
   {
     label: "当前项目",
     value: selectedProject.value?.name || "未选择",
-    helper: "当前提交会进入这个项目的活动阶段",
+    helper: "新的工时摘要会进入这个项目当前阶段。",
   },
   {
     label: "钱包状态",
     value: canWriteEvidence.value ? "可存证" : "待连接",
-    helper: canWriteEvidence.value ? wallet.chainName : "连接钱包后可发起演示存证",
+    helper: canWriteEvidence.value ? wallet.chainName : "连接钱包后可发起演示存证。",
   },
 ]);
 
@@ -100,7 +100,7 @@ watchEffect(() => {
   experience.setPageContext({
     projectName: selectedProject.value?.name || "开发工作台",
     stageLabel: canWriteEvidence.value ? "钱包已就绪" : "等待链上连接",
-    cue: "先把开发过程记录成可信摘要，再决定何时将这条工时证据写入演示链路。",
+    cue: "工时页既是操作台，也是解释开发过程为什么可信的展示页。",
     tone: "developer",
   });
 });
@@ -117,34 +117,36 @@ onBeforeUnmount(() => experience.resetPageContext());
 <template>
   <AppShell>
     <PageHero
-      title="工时记录"
+      eyebrow="开发工作区"
+      title="把开发过程沉淀成可核验的工时摘要。"
+      description="每次开发、联调或修复都不是一次匿名提交，而是项目阶段中的一条可信说明，可以继续进入交付、确认和审计链路。"
       tone="developer"
-      variant="minimal"
+      :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="createWorklog">生成工时摘要</button>
-        <RouterLink class="ghost-button" to="/deliverables">交付物</RouterLink>
+        <RouterLink class="ghost-button" to="/deliverables">查看交付物</RouterLink>
       </template>
 
       <article class="hero-side-card">
-        <div class="hero-kicker">提交预览</div>
-        <strong>{{ form.taskDescription || "在这里描述本次开发、联调或修复内容" }}</strong>
+        <div class="hero-kicker">本次录入</div>
+        <strong>{{ form.taskDescription || "描述本次开发、修复或联调内容" }}</strong>
         <p>
           {{
             selectedProject
-              ? `当前将记录到 ${selectedProject.name}，日期 ${form.workDate}，工时 ${form.hours}h。`
-              : "先选择所属项目，再补充工时日期、时长与任务描述。"
+              ? `当前会记录到 ${selectedProject.name}，日期 ${form.workDate}，工时 ${form.hours}h。`
+              : "先选择项目，再补充工时日期、时长与任务说明。"
           }}
         </p>
       </article>
     </PageHero>
 
-    <div class="showcase-grid showcase-grid-secondary">
+    <section class="showcase-grid showcase-grid-secondary">
       <section class="panel reveal-card">
         <div class="section-heading">
           <div>
-            <div class="eyebrow">登记工时</div>
-            <h3>新增工时</h3>
+            <div class="eyebrow">录入工时</div>
+            <h3>新增工时记录</h3>
           </div>
           <span class="pill subtle">
             {{ canWriteEvidence ? `网络可用：${wallet.chainName}` : "需要连接钱包后才能写入存证" }}
@@ -188,8 +190,8 @@ onBeforeUnmount(() => experience.resetPageContext());
       <section class="panel reveal-card">
         <div class="section-heading">
           <div>
-            <div class="eyebrow">工时历史</div>
-            <h3>工时记录</h3>
+            <div class="eyebrow">历史记录</div>
+            <h3>工时摘要</h3>
           </div>
         </div>
 
@@ -217,6 +219,6 @@ onBeforeUnmount(() => experience.resetPageContext());
           </article>
         </div>
       </section>
-    </div>
+    </section>
   </AppShell>
 </template>

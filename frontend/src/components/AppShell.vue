@@ -98,6 +98,99 @@ const userMetaLabel = computed(() => auth.user?.company || auth.user?.username |
 const userCompany = computed(() => auth.user?.company || "演示环境");
 const shellTone = computed(() => experience.pageContext.tone || roleToneMap[auth.role] || "neutral");
 const mobileMenuLabel = computed(() => (mobileNavOpen.value ? "收起导航" : "展开导航"));
+const footerGroups = computed(() => {
+  if (auth.role === "admin") {
+    return [
+      {
+        title: "管理入口",
+        links: [
+          { to: "/members", label: "成员管理" },
+          { to: "/projects", label: "新增项目" },
+          { to: "/project-management", label: "项目管理" },
+        ],
+      },
+      {
+        title: "闭环控制",
+        links: [
+          { to: "/audit", label: "审计管理" },
+          { to: "/process-flow", label: "流程总览" },
+          { to: "/profile", label: "个人中心" },
+        ],
+      },
+      {
+        title: "当前身份",
+        links: [
+          { to: "/home", label: roleLabel.value },
+          { to: "/home", label: userCompany.value },
+          { to: "/home", label: wallet.connected ? wallet.connectionLabel : "钱包未连接" },
+        ],
+      },
+    ];
+  }
+  if (auth.role === "developer") {
+    return [
+      {
+        title: "开发工作区",
+        links: [
+          { to: "/worklogs", label: "工时记录" },
+          { to: "/deliverables", label: "交付物" },
+          { to: "/process-flow", label: "流程总览" },
+        ],
+      },
+      {
+        title: "协作状态",
+        links: [
+          { to: "/home", label: roleLabel.value },
+          { to: "/home", label: wallet.connected ? wallet.connectionLabel : "等待连接钱包" },
+          { to: "/profile", label: "个人中心" },
+        ],
+      },
+      {
+        title: "系统入口",
+        links: [
+          { to: "/home", label: "首页" },
+          { to: "/profile", label: "身份资料" },
+        ],
+      },
+    ];
+  }
+  if (auth.role === "client") {
+    return [
+      {
+        title: "确认工作区",
+        links: [
+          { to: "/confirmations", label: "客户确认" },
+          { to: "/process-flow", label: "流程总览" },
+          { to: "/profile", label: "个人中心" },
+        ],
+      },
+      {
+        title: "当前身份",
+        links: [
+          { to: "/home", label: roleLabel.value },
+          { to: "/home", label: wallet.connected ? wallet.connectionLabel : "等待连接钱包" },
+        ],
+      },
+      {
+        title: "系统入口",
+        links: [
+          { to: "/home", label: "首页" },
+          { to: "/profile", label: "身份资料" },
+        ],
+      },
+    ];
+  }
+  return [
+    {
+      title: "导航",
+      links: [
+        { to: "/home", label: "首页" },
+        { to: "/process-flow", label: "流程总览" },
+        { to: "/profile", label: "个人中心" },
+      ],
+    },
+  ];
+});
 
 function buildFloatingStyle(triggerRef, preferredWidth = 360) {
   if (window.innerWidth <= 900) {
@@ -342,78 +435,106 @@ onBeforeUnmount(() => {
     <div v-if="compactLayout && mobileNavOpen" class="shell-backdrop" @click="closeMobileNav" />
 
     <header ref="topbarRef" class="topbar topbar-global">
-      <div class="topbar-main topbar-main-global">
-        <RouterLink class="brand-panel brand-panel-topbar" to="/home">
-          <div class="brand-mark brand-mark-topbar">TW</div>
-          <div class="brand-copy brand-copy-topbar">
-            <span class="brand-overline">可信协作平台</span>
-            <h1>Trust Work</h1>
+      <div class="w-100">
+        <div class="topbar-main topbar-main-global d-flex justify-content-between align-items-center gap-3">
+          <div class="d-flex align-items-center gap-3 min-w-0">
+            <RouterLink class="brand-panel brand-panel-topbar" to="/home">
+              <div class="brand-mark brand-mark-topbar">TW</div>
+              <div class="brand-copy brand-copy-topbar">
+                <span class="brand-overline">可信协作平台</span>
+                <h1>Trust Work</h1>
+              </div>
+            </RouterLink>
           </div>
-        </RouterLink>
-      </div>
 
-      <div class="topbar-actions topbar-actions-global">
-        <nav v-if="!compactLayout" class="nav-list nav-list-topbar" aria-label="主导航">
-          <RouterLink
-            v-for="item in navItems"
-            :key="item.to"
-            class="nav-link nav-link-topbar"
-            :to="item.to"
+          <button
+            v-if="compactLayout"
+            class="topbar-icon-button topbar-menu-button"
+            type="button"
+            :aria-expanded="mobileNavOpen"
+            :aria-label="mobileMenuLabel"
+            @click="toggleMobileNav"
           >
-            <strong>{{ item.label }}</strong>
-          </RouterLink>
-        </nav>
-
-        <button
-          v-if="compactLayout"
-          class="topbar-icon-button topbar-menu-button"
-          type="button"
-          :aria-expanded="mobileNavOpen"
-          :aria-label="mobileMenuLabel"
-          @click="toggleMobileNav"
-        >
-          <span class="menu-bar" />
-          <span class="menu-bar" />
-          <span class="menu-bar short" />
-        </button>
-
-        <div class="topbar-group topbar-group-wallet">
-          <button ref="walletTrigger" class="wallet-pill" type="button" @click="toggleWalletMenu">
-            <span class="wallet-indicator" :class="{ active: wallet.connected && wallet.supportedNetwork }" />
-            <span class="wallet-label">{{ wallet.connectionLabel }}</span>
+            <span class="menu-bar" />
+            <span class="menu-bar" />
+            <span class="menu-bar short" />
           </button>
+
+          <div v-if="!compactLayout" class="topbar-actions topbar-actions-global d-flex align-items-center gap-3">
+            <nav class="nav-list nav-list-topbar" aria-label="主导航">
+              <RouterLink
+                v-for="item in navItems"
+                :key="item.to"
+                class="nav-link nav-link-topbar"
+                :to="item.to"
+              >
+                <strong>{{ item.label }}</strong>
+              </RouterLink>
+            </nav>
+
+            <div class="topbar-group topbar-group-wallet">
+              <button ref="walletTrigger" class="wallet-pill" type="button" @click="toggleWalletMenu">
+                <span class="wallet-indicator" :class="{ active: wallet.connected && wallet.supportedNetwork }" />
+                <span class="wallet-label">{{ wallet.connectionLabel }}</span>
+              </button>
+            </div>
+
+            <button
+              ref="userTrigger"
+              class="session-chip session-chip-topbar"
+              type="button"
+              @click="toggleUserMenu"
+              :title="`${auth.user?.name || '访客'} · ${roleLabel} · ${userCompany}`"
+              aria-label="打开会话菜单"
+            >
+              <img v-if="auth.user?.avatarUrl" :src="auth.user.avatarUrl" alt="avatar" class="session-chip-avatar avatar-image" />
+              <span v-else class="session-chip-avatar avatar-fallback">{{ userBadgeLabel }}</span>
+              <span class="session-chip-copy">
+                <strong>{{ displayName }}</strong>
+                <span>{{ userMetaLabel }}</span>
+              </span>
+              <span class="session-chip-caret menu-caret" :class="{ open: userOpen }">⌄</span>
+            </button>
+          </div>
         </div>
 
-        <button
-          ref="userTrigger"
-          class="session-chip session-chip-topbar"
-          type="button"
-          @click="toggleUserMenu"
-          :title="`${auth.user?.name || '访客'} · ${roleLabel} · ${userCompany}`"
-          aria-label="打开会话菜单"
-        >
-          <img v-if="auth.user?.avatarUrl" :src="auth.user.avatarUrl" alt="avatar" class="session-chip-avatar avatar-image" />
-          <span v-else class="session-chip-avatar avatar-fallback">{{ userBadgeLabel }}</span>
-          <span class="session-chip-copy">
-            <strong>{{ displayName }}</strong>
-            <span>{{ userMetaLabel }}</span>
-          </span>
-          <span class="session-chip-caret menu-caret" :class="{ open: userOpen }">⌄</span>
-        </button>
-      </div>
+        <div v-if="compactLayout && mobileNavOpen" class="mobile-nav-panel">
+          <nav class="nav-list nav-list-mobile" aria-label="移动导航">
+            <RouterLink
+              v-for="item in navItems"
+              :key="item.to"
+              class="nav-link nav-link-mobile"
+              :to="item.to"
+              @click="closeMobileNav"
+            >
+              <strong>{{ item.label }}</strong>
+            </RouterLink>
+          </nav>
 
-      <div v-if="compactLayout && mobileNavOpen" class="mobile-nav-panel">
-        <nav class="nav-list nav-list-mobile" aria-label="移动导航">
-          <RouterLink
-            v-for="item in navItems"
-            :key="item.to"
-            class="nav-link nav-link-mobile"
-            :to="item.to"
-            @click="closeMobileNav"
+          <div class="topbar-group topbar-group-wallet">
+            <button ref="walletTrigger" class="wallet-pill" type="button" @click="toggleWalletMenu">
+              <span class="wallet-indicator" :class="{ active: wallet.connected && wallet.supportedNetwork }" />
+              <span class="wallet-label">{{ wallet.connectionLabel }}</span>
+            </button>
+          </div>
+
+          <button
+            ref="userTrigger"
+            class="session-chip session-chip-topbar"
+            type="button"
+            @click="toggleUserMenu"
+            :title="`${auth.user?.name || '访客'} · ${roleLabel} · ${userCompany}`"
+            aria-label="打开会话菜单"
           >
-            <strong>{{ item.label }}</strong>
-          </RouterLink>
-        </nav>
+            <img v-if="auth.user?.avatarUrl" :src="auth.user.avatarUrl" alt="avatar" class="session-chip-avatar avatar-image" />
+            <span v-else class="session-chip-avatar avatar-fallback">{{ userBadgeLabel }}</span>
+            <span class="session-chip-copy">
+              <strong>{{ displayName }}</strong>
+              <span>{{ userMetaLabel }}</span>
+            </span>
+            <span class="session-chip-caret menu-caret" :class="{ open: userOpen }">⌄</span>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -422,6 +543,28 @@ onBeforeUnmount(() => {
         <slot />
       </section>
     </main>
+
+    <footer class="stride-footer">
+      <div class="stride-footer-inner">
+        <div class="stride-footer-grid">
+          <div class="stride-footer-card">
+            <h3>Trust Work</h3>
+            <p>把工时、交付确认、阶段审计与链上留痕组织成可展示、可审计、可验证的协作前端。</p>
+          </div>
+
+          <div v-for="group in footerGroups" :key="group.title" class="stride-footer-nav">
+            <h4>{{ group.title }}</h4>
+            <RouterLink v-for="link in group.links" :key="`${group.title}-${link.label}`" :to="link.to">
+              {{ link.label }}
+            </RouterLink>
+          </div>
+        </div>
+
+        <div class="stride-footer-copy">
+          当前身份：{{ roleLabel }} · {{ displayName }} · {{ wallet.connected ? wallet.connectionLabel : "钱包未连接" }}
+        </div>
+      </div>
+    </footer>
 
     <Teleport to="body">
       <template v-if="walletOpen">
