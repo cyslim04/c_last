@@ -1,13 +1,11 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import AppShell from "../components/AppShell.vue";
 import MemberPicker from "../components/MemberPicker.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
-import { useExperienceStore } from "../stores/experience";
 
-const experience = useExperienceStore();
 
 const projects = ref([]);
 const developers = ref([]);
@@ -75,14 +73,6 @@ async function createProject() {
   }
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: "新增项目",
-    stageLabel: `${projects.value.length} 个项目在线`,
-    cue: "项目创建页需要像一个业务落地页，而不是单纯的控制台弹窗替代品。",
-    tone: "admin",
-  });
-});
 
 onMounted(() => {
   loadData().catch((error) => {
@@ -90,27 +80,21 @@ onMounted(() => {
   });
 });
 
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="项目创建"
-      title="为下一条可信协作链路建立项目入口。"
-      description="项目一旦建立，就会连接开发者、客户、阶段流程与审计闭环。这个页面不只是录入表单，而是整条链路的起点。"
+      title="创建项目，启动可信协作。"
+      description="填写项目、开发者与客户后，系统会同步建立后续流程与审计入口。"
       tone="admin"
+      variant="minimal"
       :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="createProject">保存项目</button>
       </template>
-
-      <article class="hero-side-card">
-        <div class="hero-kicker">当前草稿</div>
-        <strong>{{ form.name || "先定义项目名称" }}</strong>
-        <p>项目创建成功后，会进入项目管理、流程总览与审计页面同步展示，成为后续协作和留痕的共同对象。</p>
-      </article>
     </PageHero>
 
     <section class="showcase-grid showcase-grid-secondary">
@@ -129,7 +113,7 @@ onBeforeUnmount(() => experience.resetPageContext());
           </div>
           <div class="field">
             <label>项目说明</label>
-            <textarea v-model="form.description" placeholder="说明项目目标、验收范围与答辩重点" />
+            <textarea v-model="form.description" placeholder="说明项目目标、验收范围与交付要求" />
           </div>
           <div class="field">
             <label>开发者</label>
@@ -174,3 +158,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     </section>
   </AppShell>
 </template>
+

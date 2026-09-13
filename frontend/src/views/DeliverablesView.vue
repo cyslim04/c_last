@@ -1,15 +1,13 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink } from "vue-router";
 import AppShell from "../components/AppShell.vue";
 import MemberPicker from "../components/MemberPicker.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
-import { useExperienceStore } from "../stores/experience";
 import { useWalletStore } from "../stores/wallet";
 
-const experience = useExperienceStore();
 const wallet = useWalletStore();
 
 const items = ref([]);
@@ -105,23 +103,15 @@ async function writeEvidence(item) {
       txHash: `0xdl${Date.now().toString(16)}${item.id.toString(16)}`,
       blockNumber: Date.now(),
       status: "confirmed",
-      comment: `${item.fileName} 已完成演示链上存证`,
+      comment: `${item.fileName} 已完成链上存证`,
     });
-    message.value = `交付物 ${item.id} 已完成演示存证。`;
+    message.value = `交付物 ${item.id} 已完成链上存证。`;
     await loadData();
   } catch (error) {
     errorMessage.value = error.message;
   }
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: selectedProject.value?.name || "交付工作台",
-    stageLabel: fileHash.value ? "文件哈希已生成" : "准备交付材料",
-    cue: "把每次交付变成可确认、可审计、可上链说明的阶段性成果。",
-    tone: "developer",
-  });
-});
 
 onMounted(() => {
   loadData().catch((error) => {
@@ -129,15 +119,14 @@ onMounted(() => {
   });
 });
 
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="开发工作区"
-      title="把版本、文件与阶段说明组织成可确认的交付材料。"
-      description="交付页负责把文件版本、摘要、哈希和后续存证动作放在一起，避免交付说明与确认链路断开。"
+      title="登记交付版本与文件指纹。"
+      description="交付说明、文件哈希和后续存证在这里集中管理。"
       tone="developer"
       variant="minimal"
       :stats="heroStats"
@@ -146,12 +135,6 @@ onBeforeUnmount(() => experience.resetPageContext());
         <button class="button" type="button" @click="saveDeliverable">登记交付物</button>
         <RouterLink class="ghost-button" to="/worklogs">工时记录</RouterLink>
       </template>
-
-      <article class="hero-side-card">
-        <div class="hero-kicker">当前文件指纹</div>
-        <strong>{{ form.fileName || "尚未选择交付文件" }}</strong>
-        <p>{{ fileHash ? `SHA-256：${fileHash}` : "选择文件后会自动生成 SHA-256 哈希，用于后续确认、审计与演示存证。" }}</p>
-      </article>
     </PageHero>
 
     <div class="showcase-grid showcase-grid-secondary">
@@ -230,7 +213,7 @@ onBeforeUnmount(() => experience.resetPageContext());
                 type="button"
                 @click="writeEvidence(item)"
               >
-                写入演示存证
+                提交链上存证
               </button>
             </div>
           </article>
@@ -239,3 +222,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     </div>
   </AppShell>
 </template>
+

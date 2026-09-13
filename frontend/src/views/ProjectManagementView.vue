@@ -1,14 +1,12 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import AppShell from "../components/AppShell.vue";
 import MemberPicker from "../components/MemberPicker.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
-import { useExperienceStore } from "../stores/experience";
 
-const experience = useExperienceStore();
 
 const projects = ref([]);
 const developers = ref([]);
@@ -137,25 +135,16 @@ function clearFilters() {
   clientFilter.value = "all";
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: "项目管理",
-    stageLabel: `${summary.value.completed} 个已完成项目`,
-    cue: "项目管理页专门负责项目状态查看与筛选，方便管理员把已完成、进行中和异常项目清晰归类。",
-    tone: "admin",
-  });
-});
 
 onMounted(loadData);
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="管理员工作区"
-      title="在一个统一的浅色项目台里筛选、分组和追踪全部项目状态。"
-      description="项目管理不再只是一个控制台列表，而是围绕状态分层、角色筛选和流程入口组织出来的全局项目台。"
+      title="统一筛选与追踪全部项目。"
+      description="按状态、开发者和客户快速查看项目分布，并进入对应流程页面。"
       tone="admin"
       variant="minimal"
       :stats="heroStats"
@@ -165,16 +154,6 @@ onBeforeUnmount(() => experience.resetPageContext());
           {{ loading ? "刷新中..." : "刷新项目" }}
         </button>
       </template>
-
-      <article class="hero-side-card">
-        <div class="hero-kicker">当前筛选</div>
-        <strong>
-          {{ statusTabs.find((item) => item.key === statusFilter)?.label || "全部" }}
-          ｜ {{ developerOptions.find((item) => String(item.id) === String(developerFilter))?.name || "全部开发者" }}
-          ｜ {{ clientOptions.find((item) => String(item.id) === String(clientFilter))?.name || "全部客户" }}
-        </strong>
-        <p>当切到“已完成”时，页面会只显示 completed 项目；在“全部”视图下，结果会按进行中、已完成、异常项目分段收纳。</p>
-      </article>
     </PageHero>
 
     <section class="panel reveal-card project-filter-panel">
@@ -312,3 +291,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     <p v-if="errorMessage" class="feedback error-text">{{ errorMessage }}</p>
   </AppShell>
 </template>
+

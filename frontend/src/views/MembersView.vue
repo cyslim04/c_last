@@ -1,12 +1,10 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import AppShell from "../components/AppShell.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
-import { useExperienceStore } from "../stores/experience";
 
-const experience = useExperienceStore();
 
 const filterMode = ref("all");
 const members = ref([]);
@@ -19,7 +17,7 @@ const errorMessage = ref("");
 const createForm = reactive({
   name: "",
   username: "",
-  password: "member123",
+  password: "",
   role: "developer",
   company: "",
   email: "",
@@ -37,7 +35,7 @@ const editForm = reactive({
 });
 
 const passwordForm = reactive({
-  newPassword: "member123",
+  newPassword: "",
 });
 
 const filterTabs = [
@@ -71,7 +69,7 @@ function syncEditForm(member) {
 function chooseMember(member) {
   selectedMemberId.value = member.id;
   syncEditForm(member);
-  passwordForm.newPassword = "member123";
+  passwordForm.newPassword = "";
 }
 
 function currentFilters() {
@@ -113,7 +111,7 @@ async function createMember() {
     message.value = "成员创建成功。";
     createForm.name = "";
     createForm.username = "";
-    createForm.password = "member123";
+    createForm.password = "";
     createForm.company = "";
     createForm.email = "";
     createForm.phone = "";
@@ -200,25 +198,16 @@ async function removeMember(member) {
   }
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: "角色资源台",
-    stageLabel: `${members.value.length} 个成员资源`,
-    cue: "把开发者和客户从普通列表变成可编排、可讲述、可快速切换的角色资产。",
-    tone: "admin",
-  });
-});
 
 onMounted(loadMembers);
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="管理员工作区"
-      title="把成员资源从普通列表收敛成可编排、可维护的角色资产。"
-      description="成员管理页不仅负责创建账号，还要把状态、角色分工、资料维护和快捷登录联动保持在同一套后台语言里。"
+      title="成员管理"
+      description="管理成员账号、角色、资料和启用状态。"
       tone="admin"
       variant="minimal"
       :stats="heroStats"
@@ -237,18 +226,6 @@ onBeforeUnmount(() => experience.resetPageContext());
           </button>
         </div>
       </template>
-
-      <article class="hero-side-card">
-        <div class="hero-kicker">当前选中成员</div>
-        <strong>{{ selectedMember?.name || "尚未选择成员" }}</strong>
-        <p>
-          {{
-            selectedMember
-              ? `${selectedMember.username} ｜ ${selectedMember.company || "未填写团队"} ｜ 当前状态 ${selectedMember.status === "active" ? "已启用" : "已停用"}`
-              : "从右侧资源卡片中选择成员后，可以在下方继续编辑资料、重置密码或停用账号。"
-          }}
-        </p>
-      </article>
     </PageHero>
 
     <div class="showcase-grid showcase-grid-secondary">
@@ -290,7 +267,7 @@ onBeforeUnmount(() => experience.resetPageContext());
           </div>
           <div class="field">
             <label>密码</label>
-            <input v-model="createForm.password" placeholder="默认 member123" />
+            <input v-model="createForm.password" type="password" placeholder="请输入初始密码" />
           </div>
           <div class="field">
             <label>公司 / 团队</label>
@@ -306,7 +283,7 @@ onBeforeUnmount(() => experience.resetPageContext());
           </div>
           <div class="field">
             <label>个人简介</label>
-            <textarea v-model="createForm.bio" placeholder="说明职责或演示定位" />
+            <textarea v-model="createForm.bio" placeholder="说明职责或工作范围" />
           </div>
         </div>
 
@@ -369,10 +346,13 @@ onBeforeUnmount(() => experience.resetPageContext());
     <section v-if="selectedMember" class="panel reveal-card">
       <div class="section-heading">
         <div>
-          <div class="eyebrow">成员维护</div>
+          <div class="eyebrow">正在维护成员</div>
           <h3>{{ selectedMember.name }}</h3>
         </div>
-        <span class="pill subtle">{{ selectedMember.role }} / {{ selectedMember.username }}</span>
+        <div class="member-context-meta">
+          <span class="pill subtle">{{ selectedMember.role }} / {{ selectedMember.username }}</span>
+          <span class="meta-line">当前登录：系统管理员</span>
+        </div>
       </div>
 
       <div class="showcase-grid showcase-grid-secondary">
@@ -424,12 +404,12 @@ onBeforeUnmount(() => experience.resetPageContext());
 
           <div class="field">
             <label>新密码</label>
-            <input v-model="passwordForm.newPassword" placeholder="请输入新密码" />
+            <input v-model="passwordForm.newPassword" type="password" placeholder="请输入新密码" />
           </div>
 
           <div class="state-explain-card">
             <span>重置后会发生什么</span>
-            <strong>重置后同步快捷登录密码。</strong>
+            <strong>重置后使用新密码登录。</strong>
           </div>
 
           <div class="button-row">
@@ -445,3 +425,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     <p v-if="errorMessage" class="feedback error-text">{{ errorMessage }}</p>
   </AppShell>
 </template>
+

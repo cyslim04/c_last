@@ -1,15 +1,13 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppShell from "../components/AppShell.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
 import { useAuthStore } from "../stores/auth";
-import { useExperienceStore } from "../stores/experience";
 
 const auth = useAuthStore();
-const experience = useExperienceStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -77,7 +75,7 @@ const routeProjectId = computed(() => {
 });
 
 const hasProject = computed(() => Boolean(flow.value.selectedProject));
-const selectedProjectLabel = computed(() => flow.value.selectedProject?.name || "选择演示项目");
+const selectedProjectLabel = computed(() => flow.value.selectedProject?.name || "选择项目");
 const selectedProjectMeta = computed(() => {
   if (!flow.value.selectedProject) {
     return "当前角色暂无可见项目";
@@ -515,14 +513,6 @@ function syncProjectMenuPosition() {
   projectMenuStyle.value = buildProjectMenuStyle();
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: flow.value.selectedProject?.name || "品牌级链路地图",
-    stageLabel: currentStage.value?.stageNo ? `阶段 ${currentStage.value.stageNo}` : "全局链路视图",
-    cue: "把高层流程图、阶段循环与总审计门禁放在同一张流程总览里讲清楚。",
-    tone: auth.role || "neutral",
-  });
-});
 
 watch(
   () => projectMenuOpen.value,
@@ -556,7 +546,6 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleWindowKeydown);
   window.removeEventListener("resize", syncProjectMenuPosition);
   window.removeEventListener("scroll", syncProjectMenuPosition, true);
-  experience.resetPageContext();
 });
 </script>
 
@@ -564,8 +553,8 @@ onBeforeUnmount(() => {
   <AppShell>
     <PageHero
       eyebrow="全局流程"
-      title="把高层结构、阶段循环与最终门禁收敛到一张流程总览里。"
-      description="流程总览页不是装饰性流程图，而是把项目切换、角色责任、阶段推进和总审计条件放在同一张工作地图里解释清楚。"
+      title="统一查看结构流程与当前阶段。"
+      description="用一张流程总览同时说明角色分工、阶段推进和总审计门禁。"
       :tone="auth.role"
       variant="minimal"
       :stats="heroStats"
@@ -639,12 +628,6 @@ onBeforeUnmount(() => {
           </div>
         </Teleport>
       </template>
-
-      <article class="hero-side-card">
-        <div class="hero-kicker">当前项目</div>
-        <strong>{{ selectedProjectLabel }}</strong>
-        <p>{{ selectedProjectMeta }}</p>
-      </article>
     </PageHero>
 
     <section v-if="viewMode === 'global'" class="panel reveal-card process-map-panel">
@@ -982,3 +965,4 @@ onBeforeUnmount(() => {
     <p v-if="errorMessage" class="feedback error-text">{{ errorMessage }}</p>
   </AppShell>
 </template>
+

@@ -1,13 +1,11 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import AppShell from "../components/AppShell.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
-import { useExperienceStore } from "../stores/experience";
 import { useWalletStore } from "../stores/wallet";
 
-const experience = useExperienceStore();
 const wallet = useWalletStore();
 
 const stages = ref([]);
@@ -113,14 +111,6 @@ async function confirmStage(stage, approved) {
   }
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: pendingStages.value[0]?.projectName || "确认看板",
-    stageLabel: pendingStages.value.length ? `${pendingStages.value.length} 个阶段待确认` : "当前没有待确认阶段",
-    cue: "客户看到的不只是交付物，还能看到阶段内的工时历史、文件哈希和确认后的流向。",
-    tone: "client",
-  });
-});
 
 onMounted(() => {
   loadStages().catch((error) => {
@@ -128,15 +118,14 @@ onMounted(() => {
   });
 });
 
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="客户工作区"
-      title="在阶段材料充分可见的前提下做出确认结论。"
-      description="这里不只展示一个交付条目，而是把阶段交付、同阶段工时和确认后的流向变化放进同一块判断面板。"
+      title="查看阶段材料并完成确认。"
+      description="客户可基于交付、工时和说明，对当前阶段给出通过或驳回结论。"
       tone="client"
       variant="minimal"
       :stats="heroStats"
@@ -144,12 +133,6 @@ onBeforeUnmount(() => experience.resetPageContext());
       <template #actions>
         <button class="button" type="button" @click="loadStages">刷新确认状态</button>
       </template>
-
-      <article class="hero-side-card">
-        <div class="hero-kicker">确认说明</div>
-        <strong>{{ pendingStages.length ? `你当前有 ${pendingStages.length} 个阶段待决定` : "当前没有新的阶段需要确认" }}</strong>
-        <p>通过后会进入管理员阶段审计；驳回后会要求开发者继续补充和修正本阶段交付。</p>
-      </article>
     </PageHero>
 
     <section class="panel reveal-card">
@@ -217,3 +200,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     </section>
   </AppShell>
 </template>
+

@@ -2,13 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, Teleport, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
-import { useExperienceStore } from "../stores/experience";
 import { useWalletStore } from "../stores/wallet";
 
 const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
-const experience = useExperienceStore();
 const wallet = useWalletStore();
 
 const walletOpen = ref(false);
@@ -94,9 +92,9 @@ const supportedNetworks = computed(() => wallet.availableNetworks);
 const roleLabel = computed(() => roleLabelMap[auth.user?.role || "guest"] || auth.user?.role || "访客");
 const displayName = computed(() => auth.user?.name || auth.user?.username || "访客");
 const userBadgeLabel = computed(() => buildUserBadgeLabel(auth.user?.name || auth.user?.username || "访客"));
-const userMetaLabel = computed(() => auth.user?.company || auth.user?.username || roleLabel.value);
-const userCompany = computed(() => auth.user?.company || "演示环境");
-const shellTone = computed(() => experience.pageContext.tone || roleToneMap[auth.role] || "neutral");
+const userMetaLabel = computed(() => `当前登录 · ${roleLabel.value}`);
+const userCompany = computed(() => auth.user?.company || "未设置团队");
+const shellTone = computed(() => roleToneMap[auth.role] || "neutral");
 const mobileMenuLabel = computed(() => (mobileNavOpen.value ? "收起导航" : "展开导航"));
 const footerGroups = computed(() => {
   if (auth.role === "admin") {
@@ -262,7 +260,7 @@ function toggleMobileNav() {
 }
 
 function updateViewportState() {
-  compactLayout.value = window.innerWidth <= 1080;
+  compactLayout.value = window.innerWidth <= 1180;
   if (!compactLayout.value) {
     mobileNavOpen.value = false;
   }
@@ -549,7 +547,7 @@ onBeforeUnmount(() => {
         <div class="stride-footer-grid">
           <div class="stride-footer-card">
             <h3>Trust Work</h3>
-            <p>把工时、交付确认、阶段审计与链上留痕组织成可展示、可审计、可验证的协作前端。</p>
+            <p>把工时、交付确认、阶段审计与链上留痕组织成可审计、可验证的协作系统。</p>
           </div>
 
           <div v-for="group in footerGroups" :key="group.title" class="stride-footer-nav">
@@ -575,7 +573,7 @@ onBeforeUnmount(() => {
             {{
               wallet.connected
                 ? `当前地址 ${wallet.shortAddress}，网络 ${wallet.chainName || "未知网络"}`
-                : "连接 MetaMask 后，可快速切换账户、网络，并推进演示存证。"
+                : "连接 MetaMask 后可提交链上存证。"
             }}
           </p>
           <p v-if="walletMessage" class="feedback error-text">{{ walletMessage }}</p>
@@ -614,8 +612,8 @@ onBeforeUnmount(() => {
       <template v-if="userOpen">
         <div class="overlay-backdrop" @click="closeMenus" />
         <div class="dropdown-panel floating-panel user-dropdown" :style="userStyle">
-          <div class="dropdown-title">会话操作</div>
-          <p class="dropdown-copy">头像可直接进入个人中心，此处保留会话操作。</p>
+          <div class="dropdown-title">当前登录身份</div>
+          <p class="dropdown-copy">{{ roleLabel }} · {{ displayName }} · {{ userCompany }}</p>
           <RouterLink class="menu-link" to="/profile" @click="closeMenus">查看资料</RouterLink>
           <button class="ghost-button full-width" type="button" @click="logout">退出登录</button>
         </div>

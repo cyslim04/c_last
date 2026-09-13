@@ -9,14 +9,14 @@
 #include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <time.h>
 
 #define SERVER_PORT 8080
 #define DB_PATH "data/trust_work.db"
-#define DEMO_SEED_VERSION 4
 #define MAX_REQUEST_SIZE 524288
-#define MAX_RESPONSE_SIZE 262144
+#define MAX_RESPONSE_SIZE 1048576
 #define MAX_BODY_SIZE 262144
 
 typedef struct {
@@ -185,6 +185,45 @@ static int json_get_double(const char *json, const char *key, double *value) {
   *value = strtod(cursor, NULL);
   return 1;
 }
+static const char *sqlite_text_or_empty(sqlite3_stmt *stmt, int column) {
+  const unsigned char *value = sqlite3_column_text(stmt, column);
+  return value ? (const char *) value : "";
+}
+
+static void copy_sqlite_text(sqlite3_stmt *stmt, int column, char *output, size_t size) {
+  if (!output || size == 0) {
+    return;
+  }
+
+  snprintf(output, size, "%s", sqlite_text_or_empty(stmt, column));
+}
+
+static int append_format(char *buffer, size_t size, size_t *off, const char *format, ...) {
+  va_list args;
+  int written;
+  size_t remaining;
+
+  if (!buffer || !off || !format || size == 0 || *off >= size) {
+    if (off) {
+      *off = size;
+    }
+    return 0;
+  }
+
+  remaining = size - *off;
+  va_start(args, format);
+  written = vsnprintf(buffer + *off, remaining, format, args);
+  va_end(args);
+
+  if (written < 0 || (size_t) written >= remaining) {
+    buffer[size - 1] = '\0';
+    *off = size;
+    return 0;
+  }
+
+  *off += (size_t) written;
+  return 1;
+}
 
 static int path_matches(const char *path, const char *base) {
   size_t base_len = strlen(base);
@@ -248,34 +287,6 @@ static int scalar_int(sqlite3 *db, const char *sql) {
   return value;
 }
 
-static int meta_int(sqlite3 *db, const char *key) {
-  sqlite3_stmt *stmt = NULL;
-  int value = 0;
-
-  if (sqlite3_prepare_v2(db, "SELECT value FROM app_meta WHERE key = ?", -1, &stmt, NULL) == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-      value = atoi((const char *) sqlite3_column_text(stmt, 0));
-    }
-  }
-
-  sqlite3_finalize(stmt);
-  return value;
-}
-
-static void set_meta_int(sqlite3 *db, const char *key, int value) {
-  sqlite3_stmt *stmt = NULL;
-  char buffer[32];
-
-  snprintf(buffer, sizeof(buffer), "%d", value);
-  if (sqlite3_prepare_v2(db, "INSERT INTO app_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", -1, &stmt, NULL) == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, buffer, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
-  }
-  sqlite3_finalize(stmt);
-}
-
 static void make_password_hash(const char *password, const char *salt, char output[65]) {
   char source[256];
 
@@ -329,16 +340,16 @@ static int load_user_by_id(sqlite3 *db, int user_id, CurrentUser *user) {
     sqlite3_bind_int(stmt, 1, user_id);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       user->id = sqlite3_column_int(stmt, 0);
-      snprintf(user->username, sizeof(user->username), "%s", (const char *) sqlite3_column_text(stmt, 1));
-      snprintf(user->name, sizeof(user->name), "%s", (const char *) sqlite3_column_text(stmt, 2));
-      snprintf(user->role, sizeof(user->role), "%s", (const char *) sqlite3_column_text(stmt, 3));
-      snprintf(user->status, sizeof(user->status), "%s", (const char *) sqlite3_column_text(stmt, 4));
-      snprintf(user->wallet_address, sizeof(user->wallet_address), "%s", (const char *) sqlite3_column_text(stmt, 5));
-      snprintf(user->email, sizeof(user->email), "%s", (const char *) sqlite3_column_text(stmt, 6));
-      snprintf(user->phone, sizeof(user->phone), "%s", (const char *) sqlite3_column_text(stmt, 7));
-      snprintf(user->company, sizeof(user->company), "%s", (const char *) sqlite3_column_text(stmt, 8));
-      snprintf(user->bio, sizeof(user->bio), "%s", (const char *) sqlite3_column_text(stmt, 9));
-      snprintf(user->avatar_path, sizeof(user->avatar_path), "%s", (const char *) sqlite3_column_text(stmt, 10));
+      copy_sqlite_text(stmt, 1, user->username, sizeof(user->username));
+      copy_sqlite_text(stmt, 2, user->name, sizeof(user->name));
+      copy_sqlite_text(stmt, 3, user->role, sizeof(user->role));
+      copy_sqlite_text(stmt, 4, user->status, sizeof(user->status));
+      copy_sqlite_text(stmt, 5, user->wallet_address, sizeof(user->wallet_address));
+      copy_sqlite_text(stmt, 6, user->email, sizeof(user->email));
+      copy_sqlite_text(stmt, 7, user->phone, sizeof(user->phone));
+      copy_sqlite_text(stmt, 8, user->company, sizeof(user->company));
+      copy_sqlite_text(stmt, 9, user->bio, sizeof(user->bio));
+      copy_sqlite_text(stmt, 10, user->avatar_path, sizeof(user->avatar_path));
       found = 1;
     }
   }
@@ -348,11 +359,11 @@ static int load_user_by_id(sqlite3 *db, int user_id, CurrentUser *user) {
 }
 
 static int current_user_id(const HttpRequest *request) {
-  if (strncmp(request->authorization, "Bearer demo-token-", 18) != 0) {
+  if (strncmp(request->authorization, "Bearer session-token-", 21) != 0) {
     return 0;
   }
 
-  return atoi(request->authorization + 18);
+  return atoi(request->authorization + 21);
 }
 
 static int is_admin(const CurrentUser *user) {
@@ -625,23 +636,10 @@ static void send_auth_payload(sqlite3 *db, SOCKET client, int user_id) {
   char body[MAX_RESPONSE_SIZE];
   size_t off = 0;
 
-  off += (size_t) snprintf(body + off, sizeof(body) - off, "{\"token\":\"demo-token-%d\",\"user\":", user_id);
+  off += (size_t) snprintf(body + off, sizeof(body) - off, "{\"token\":\"session-token-%d\",\"user\":", user_id);
   append_user_json(db, user_id, body, sizeof(body), &off);
   snprintf(body + off, sizeof(body) - off, "}");
   send_response(client, 200, "OK", body);
-}
-
-static const char *quick_login_role_description(const char *role) {
-  if (strcmp(role, "admin") == 0) {
-    return "管理员演示账号";
-  }
-  if (strcmp(role, "developer") == 0) {
-    return "开发者演示账号";
-  }
-  if (strcmp(role, "client") == 0) {
-    return "客户演示账号";
-  }
-  return "角色演示账号";
 }
 
 static void ensure_schema(sqlite3 *db) {
@@ -654,7 +652,6 @@ static void ensure_schema(sqlite3 *db) {
     "status TEXT NOT NULL DEFAULT 'active', "
     "password_hash TEXT NOT NULL, "
     "password_salt TEXT NOT NULL, "
-    "quick_login_password TEXT DEFAULT '', "
     "wallet_address TEXT DEFAULT '', "
     "email TEXT DEFAULT '', "
     "phone TEXT DEFAULT '', "
@@ -755,10 +752,7 @@ static void ensure_schema(sqlite3 *db) {
     "detail TEXT DEFAULT '', "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
-    "CREATE TABLE IF NOT EXISTS app_meta ("
-    "key TEXT PRIMARY KEY, "
-    "value TEXT NOT NULL"
-    ");";
+    ";";
 
   exec_sql(db, schema);
   exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''");
@@ -768,7 +762,6 @@ static void ensure_schema(sqlite3 *db) {
   exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN avatar_path TEXT DEFAULT ''");
   exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP");
   exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
-  exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN quick_login_password TEXT DEFAULT ''");
   exec_sql_ignore(db, "ALTER TABLE wallet_bindings ADD COLUMN chain_id TEXT DEFAULT ''");
   exec_sql_ignore(db, "ALTER TABLE wallet_bindings ADD COLUMN chain_name TEXT DEFAULT ''");
   exec_sql_ignore(db, "ALTER TABLE worklogs ADD COLUMN stage_no INTEGER NOT NULL DEFAULT 1");
@@ -785,68 +778,23 @@ static int insert_user_account(sqlite3 *db, const char *username, const char *na
   snprintf(salt, sizeof(salt), "%s-%s", salt_prefix ? salt_prefix : "user", username);
   make_password_hash(password, salt, hash);
 
-  if (sqlite3_prepare_v2(db, "INSERT INTO users(username, name, role, status, password_hash, password_salt, quick_login_password, wallet_address, email, phone, company, bio, avatar_path, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', CURRENT_TIMESTAMP)", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "INSERT INTO users(username, name, role, status, password_hash, password_salt, wallet_address, email, phone, company, bio, avatar_path, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', CURRENT_TIMESTAMP)", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_text(stmt, 1, username, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, role, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 4, status ? status : "active", -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, hash, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 6, salt, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 7, password, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 8, wallet, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 9, email, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 10, phone, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 11, company, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 12, bio, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, wallet, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, email, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, phone, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, company, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 11, bio, -1, SQLITE_TRANSIENT);
     sqlite3_step(stmt);
   }
 
   sqlite3_finalize(stmt);
   return (int) sqlite3_last_insert_rowid(db);
-}
-
-static int insert_seed_user(sqlite3 *db, const char *username, const char *name, const char *role, const char *password, const char *email, const char *phone, const char *company, const char *bio, const char *wallet, const char *status) {
-  return insert_user_account(db, username, name, role, password, email, phone, company, bio, wallet, status, "seed");
-}
-
-static void backfill_quick_login_password_for_known_user(sqlite3 *db, const char *username, const char *password) {
-  sqlite3_stmt *stmt = NULL;
-  sqlite3_stmt *update_stmt = NULL;
-  int user_id = 0;
-  const unsigned char *hash = NULL;
-  const unsigned char *salt = NULL;
-  const unsigned char *quick_login_password = NULL;
-
-  if (sqlite3_prepare_v2(db, "SELECT id, password_hash, password_salt, quick_login_password FROM users WHERE username = ?", -1, &stmt, NULL) == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, username, -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-      quick_login_password = sqlite3_column_text(stmt, 3);
-      hash = sqlite3_column_text(stmt, 1);
-      salt = sqlite3_column_text(stmt, 2);
-      if ((!quick_login_password || !quick_login_password[0]) &&
-          hash &&
-          salt &&
-          verify_password(password, (const char *) salt, (const char *) hash)) {
-        user_id = sqlite3_column_int(stmt, 0);
-      }
-    }
-  }
-  sqlite3_finalize(stmt);
-
-  if (user_id > 0 && sqlite3_prepare_v2(db, "UPDATE users SET quick_login_password = ? WHERE id = ?", -1, &update_stmt, NULL) == SQLITE_OK) {
-    sqlite3_bind_text(update_stmt, 1, password, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(update_stmt, 2, user_id);
-    sqlite3_step(update_stmt);
-  }
-  sqlite3_finalize(update_stmt);
-}
-
-static void backfill_known_quick_login_passwords(sqlite3 *db) {
-  backfill_quick_login_password_for_known_user(db, "admin", "admin123");
-  backfill_quick_login_password_for_known_user(db, "dev", "dev123");
-  backfill_quick_login_password_for_known_user(db, "dev2", "dev123");
-  backfill_quick_login_password_for_known_user(db, "client", "client123");
-  backfill_quick_login_password_for_known_user(db, "client2", "client123");
 }
 
 static void insert_wallet_binding(sqlite3 *db, int user_id, const char *wallet, const char *chain_id, const char *chain_name, int is_primary) {
@@ -993,112 +941,6 @@ static int insert_project_audit(sqlite3 *db, int project_id, int stage_no, const
   return (int) sqlite3_last_insert_rowid(db);
 }
 
-static void seed_demo_data(sqlite3 *db) {
-  int admin_id;
-  int developer_id;
-  int developer_b_id;
-  int client_id;
-  int client_b_id;
-  int project_final_ready_id;
-  int project_stage_pending_id;
-  int project_client_pending_id;
-  int worklog_id;
-  int deliverable_id;
-  int project_audit_id;
-
-  exec_sql(db, "BEGIN TRANSACTION");
-  exec_sql(db, "DELETE FROM project_audits");
-  exec_sql(db, "DELETE FROM approval_records");
-  exec_sql(db, "DELETE FROM evidence_records");
-  exec_sql(db, "DELETE FROM deliverables");
-  exec_sql(db, "DELETE FROM worklogs");
-  exec_sql(db, "DELETE FROM project_members");
-  exec_sql(db, "DELETE FROM projects");
-  exec_sql(db, "DELETE FROM wallet_bindings");
-  exec_sql(db, "DELETE FROM audit_logs");
-  exec_sql(db, "DELETE FROM users");
-  exec_sql(db, "DELETE FROM sqlite_sequence WHERE name IN ('users','wallet_bindings','projects','project_members','worklogs','deliverables','evidence_records','approval_records','project_audits','audit_logs')");
-
-  admin_id = insert_seed_user(db, "admin", "系统管理员", "admin", "admin123", "admin@trustwork.demo", "13800000001", "Trust Work Lab", "负责创建项目、管理成员和阶段/总审计闭环。", "", "active");
-  developer_id = insert_seed_user(db, "dev", "林一帆", "developer", "dev123", "dev@trustwork.demo", "13800000002", "独立开发工作室", "负责可信工时平台项目的多阶段工时登记、交付与存证演示。", "0x4B0897b0513fdc7C541B6d9D7E929C4e5364D2dB", "active");
-  developer_b_id = insert_seed_user(db, "dev2", "苏沐宸", "developer", "dev123", "dev2@trustwork.demo", "13800000004", "沐宸数字工坊", "负责第二项目的阶段交付、移动端联调与答辩演示。", "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199", "active");
-  client_id = insert_seed_user(db, "client", "周岚", "client", "client123", "client@trustwork.demo", "13800000003", "北辰科技", "负责阶段确认交付并配合管理员完成阶段审计和总审计。", "0x583031D1113aD414F02576BD6afaBfb302140225", "active");
-  client_b_id = insert_seed_user(db, "client2", "顾清禾", "client", "client123", "client2@trustwork.demo", "13800000005", "云桥创新", "负责第二项目的阶段确认与反馈。", "0xdD2FD4581271e230360230F9337D5c0430Bf44C0", "active");
-
-  insert_wallet_binding(db, developer_id, "0x4B0897b0513fdc7C541B6d9D7E929C4e5364D2dB", "0xaa36a7", "Sepolia", 1);
-  insert_wallet_binding(db, developer_id, "0x4B0897b0513fdc7C541B6d9D7E929C4e5364D2dC", "0x7a69", "Hardhat", 0);
-  insert_wallet_binding(db, developer_b_id, "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199", "0xaa36a7", "Sepolia", 1);
-  insert_wallet_binding(db, developer_b_id, "0xdD2FD4581271e230360230F9337D5c0430Bf44C1", "0x7a69", "Hardhat", 0);
-  insert_wallet_binding(db, client_id, "0x583031D1113aD414F02576BD6afaBfb302140225", "0xaa36a7", "Sepolia", 1);
-  insert_wallet_binding(db, client_b_id, "0xdD2FD4581271e230360230F9337D5c0430Bf44C0", "0xaa36a7", "Sepolia", 1);
-
-  project_final_ready_id = insert_project(db, "企业官网 2.0 重构", "阶段 1 与阶段 2 均已完成管理员阶段审计，当前等待项目总审计。", "active", developer_id, client_id);
-  project_stage_pending_id = insert_project(db, "可信工时平台答辩演示", "阶段 1 已闭环，阶段 2 已通过客户确认，等待管理员阶段审计。", "active", developer_id, client_id);
-  project_client_pending_id = insert_project(db, "智慧园区小程序二期", "阶段 1 已完成存证，等待客户查看工时历史并确认本阶段交付。", "active", developer_b_id, client_b_id);
-
-  insert_project_member(db, project_final_ready_id, developer_id, "developer");
-  insert_project_member(db, project_final_ready_id, client_id, "client");
-  insert_project_member(db, project_stage_pending_id, developer_id, "developer");
-  insert_project_member(db, project_stage_pending_id, client_id, "client");
-  insert_project_member(db, project_client_pending_id, developer_b_id, "developer");
-  insert_project_member(db, project_client_pending_id, client_b_id, "client");
-
-  worklog_id = insert_worklog(db, project_final_ready_id, developer_id, 1, "2026-04-03", 6.0, "完成官网首页框架与品牌视觉重构。", "confirmed", "0xwl10000000000000000000000000000000000000000000000000000000000001");
-  insert_evidence(db, "worklog", worklog_id, "0xwl10000000000000000000000000000000000000000000000000000000000001", 110101, "confirmed", "阶段 1 工时摘要已写入演示链。", developer_id);
-  worklog_id = insert_worklog(db, project_final_ready_id, developer_id, 1, "2026-04-04", 4.5, "补齐 CMS 接口联调与首屏交互动画。", "confirmed", "0xwl10000000000000000000000000000000000000000000000000000000000002");
-  insert_evidence(db, "worklog", worklog_id, "0xwl10000000000000000000000000000000000000000000000000000000000002", 110102, "confirmed", "阶段 1 第二条工时已写入演示链。", developer_id);
-  deliverable_id = insert_deliverable(db, project_final_ready_id, developer_id, 1, "v1.0.0", "homepage-stage1.zip", "官网第一阶段交付，包含首页、品牌页与基础 CMS 接口。", "1111111111111111111111111111111111111111111111111111111111111111", "approved", "0xdl10000000000000000000000000000000000000000000000000000000000001", "客户确认通过，允许进入下一阶段。");
-  insert_evidence(db, "deliverable", deliverable_id, "0xdl10000000000000000000000000000000000000000000000000000000000001", 110201, "confirmed", "阶段 1 交付物已完成演示存证。", developer_id);
-  insert_approval(db, deliverable_id, client_id, 1, "阶段 1 客户确认通过。", "0xcf10000000000000000000000000000000000000000000000000000000000001");
-  insert_evidence(db, "deliverable_confirmation", deliverable_id, "0xcf10000000000000000000000000000000000000000000000000000000000001", 110202, "confirmed", "阶段 1 客户确认通过。", client_id);
-  project_audit_id = insert_project_audit(db, project_final_ready_id, 1, "stage", "pass", "阶段 1 审计通过，可进入下一阶段。", "0xsa10000000000000000000000000000000000000000000000000000000000001", admin_id);
-  insert_evidence(db, "stage_audit", project_audit_id, "0xsa10000000000000000000000000000000000000000000000000000000000001", 110203, "confirmed", "阶段 1 审计通过。", admin_id);
-
-  worklog_id = insert_worklog(db, project_final_ready_id, developer_id, 2, "2026-04-08", 5.5, "完成官网活动页、报名表单与投放埋点。", "confirmed", "0xwl10000000000000000000000000000000000000000000000000000000000003");
-  insert_evidence(db, "worklog", worklog_id, "0xwl10000000000000000000000000000000000000000000000000000000000003", 110301, "confirmed", "阶段 2 工时摘要已写入演示链。", developer_id);
-  deliverable_id = insert_deliverable(db, project_final_ready_id, developer_id, 2, "v1.1.0", "homepage-stage2.zip", "官网第二阶段交付，补齐活动页、表单与投放分析。", "2222222222222222222222222222222222222222222222222222222222222222", "approved", "0xdl10000000000000000000000000000000000000000000000000000000000002", "客户确认通过，等待总审计。");
-  insert_evidence(db, "deliverable", deliverable_id, "0xdl10000000000000000000000000000000000000000000000000000000000002", 110302, "confirmed", "阶段 2 交付物已完成演示存证。", developer_id);
-  insert_approval(db, deliverable_id, client_id, 1, "阶段 2 客户确认通过。", "0xcf10000000000000000000000000000000000000000000000000000000000002");
-  insert_evidence(db, "deliverable_confirmation", deliverable_id, "0xcf10000000000000000000000000000000000000000000000000000000000002", 110303, "confirmed", "阶段 2 客户确认通过。", client_id);
-  project_audit_id = insert_project_audit(db, project_final_ready_id, 2, "stage", "pass", "阶段 2 审计通过，项目可进入总审计。", "0xsa10000000000000000000000000000000000000000000000000000000000002", admin_id);
-  insert_evidence(db, "stage_audit", project_audit_id, "0xsa10000000000000000000000000000000000000000000000000000000000002", 110304, "confirmed", "阶段 2 审计通过。", admin_id);
-
-  worklog_id = insert_worklog(db, project_stage_pending_id, developer_id, 1, "2026-04-09", 4.5, "完成平台首页统计模块与登录态修正。", "confirmed", "0xwl20000000000000000000000000000000000000000000000000000000000001");
-  insert_evidence(db, "worklog", worklog_id, "0xwl20000000000000000000000000000000000000000000000000000000000001", 120101, "confirmed", "答辩项目阶段 1 工时已上链。", developer_id);
-  deliverable_id = insert_deliverable(db, project_stage_pending_id, developer_id, 1, "v0.8.0", "trust-work-stage1.zip", "阶段 1 交付，完成仪表盘、路由与基础接口联通。", "3333333333333333333333333333333333333333333333333333333333333333", "approved", "0xdl20000000000000000000000000000000000000000000000000000000000001", "阶段 1 确认通过。");
-  insert_evidence(db, "deliverable", deliverable_id, "0xdl20000000000000000000000000000000000000000000000000000000000001", 120102, "confirmed", "阶段 1 交付已存证。", developer_id);
-  insert_approval(db, deliverable_id, client_id, 1, "阶段 1 客户确认通过。", "0xcf20000000000000000000000000000000000000000000000000000000000001");
-  insert_evidence(db, "deliverable_confirmation", deliverable_id, "0xcf20000000000000000000000000000000000000000000000000000000000001", 120103, "confirmed", "阶段 1 客户确认通过。", client_id);
-  project_audit_id = insert_project_audit(db, project_stage_pending_id, 1, "stage", "pass", "阶段 1 管理员审计通过。", "0xsa20000000000000000000000000000000000000000000000000000000000001", admin_id);
-  insert_evidence(db, "stage_audit", project_audit_id, "0xsa20000000000000000000000000000000000000000000000000000000000001", 120104, "confirmed", "阶段 1 审计通过。", admin_id);
-
-  worklog_id = insert_worklog(db, project_stage_pending_id, developer_id, 2, "2026-04-12", 5.0, "补齐个人中心、顶部壳层与成员选择器体验。", "confirmed", "0xwl20000000000000000000000000000000000000000000000000000000000002");
-  insert_evidence(db, "worklog", worklog_id, "0xwl20000000000000000000000000000000000000000000000000000000000002", 120201, "confirmed", "阶段 2 工时已上链。", developer_id);
-  worklog_id = insert_worklog(db, project_stage_pending_id, developer_id, 2, "2026-04-13", 3.5, "修正流程总览与审计页交互细节。", "pending", "");
-  deliverable_id = insert_deliverable(db, project_stage_pending_id, developer_id, 2, "v1.0.0-beta", "trust-work-stage2.zip", "阶段 2 交付，个人中心、顶部壳层和表单选择器已完善。", "4444444444444444444444444444444444444444444444444444444444444444", "approved", "0xdl20000000000000000000000000000000000000000000000000000000000002", "客户确认通过，等待管理员阶段审计。");
-  insert_evidence(db, "deliverable", deliverable_id, "0xdl20000000000000000000000000000000000000000000000000000000000002", 120202, "confirmed", "阶段 2 交付已存证。", developer_id);
-  insert_approval(db, deliverable_id, client_id, 1, "阶段 2 客户确认通过，等待管理员阶段审计。", "0xcf20000000000000000000000000000000000000000000000000000000000002");
-  insert_evidence(db, "deliverable_confirmation", deliverable_id, "0xcf20000000000000000000000000000000000000000000000000000000000002", 120203, "confirmed", "阶段 2 客户确认通过。", client_id);
-
-  worklog_id = insert_worklog(db, project_client_pending_id, developer_b_id, 1, "2026-04-14", 6.5, "完成智慧园区预约流转、消息提醒与移动端适配。", "confirmed", "0xwl30000000000000000000000000000000000000000000000000000000000001");
-  insert_evidence(db, "worklog", worklog_id, "0xwl30000000000000000000000000000000000000000000000000000000000001", 130101, "confirmed", "智慧园区项目阶段 1 工时已存证。", developer_b_id);
-  worklog_id = insert_worklog(db, project_client_pending_id, developer_b_id, 1, "2026-04-15", 3.0, "补齐客户确认页文案与阶段展示逻辑。", "pending", "");
-  deliverable_id = insert_deliverable(db, project_client_pending_id, developer_b_id, 1, "v0.9.2", "smart-park-stage1.zip", "阶段 1 交付，预约流转、消息提醒和客户确认页已可演示。", "5555555555555555555555555555555555555555555555555555555555555555", "notarized", "0xdl30000000000000000000000000000000000000000000000000000000000001", "");
-  insert_evidence(db, "deliverable", deliverable_id, "0xdl30000000000000000000000000000000000000000000000000000000000001", 130102, "confirmed", "智慧园区项目阶段 1 交付已完成演示存证。", developer_b_id);
-
-  add_audit_log(db, admin_id, "seed_reset", "app_meta", DEMO_SEED_VERSION, "重建阶段循环式答辩演示数据。");
-  add_audit_log(db, admin_id, "create_project", "project", project_final_ready_id, "企业官网 2.0 重构");
-  add_audit_log(db, admin_id, "create_project", "project", project_stage_pending_id, "可信工时平台答辩演示");
-  add_audit_log(db, admin_id, "create_project", "project", project_client_pending_id, "智慧园区小程序二期");
-  add_audit_log(db, developer_id, "bind_wallet", "wallet_binding", developer_id, "连接主开发者钱包");
-  add_audit_log(db, developer_b_id, "bind_wallet", "wallet_binding", developer_b_id, "连接第二开发者钱包");
-  add_audit_log(db, client_id, "approve_deliverable", "deliverable", project_stage_pending_id, "阶段确认通过");
-  add_audit_log(db, admin_id, "stage_audit_pass", "project_stage", project_final_ready_id, "历史阶段审计通过");
-
-  set_meta_int(db, "seed_version", DEMO_SEED_VERSION);
-  exec_sql(db, "COMMIT");
-}
-
 static int init_database(sqlite3 **db) {
   if (sqlite3_open(DB_PATH, db) != SQLITE_OK) {
     return 0;
@@ -1106,14 +948,28 @@ static int init_database(sqlite3 **db) {
 
   ensure_directories();
   ensure_schema(*db);
-  backfill_known_quick_login_passwords(*db);
 
-  if (meta_int(*db, "seed_version") != DEMO_SEED_VERSION ||
-      scalar_int(*db, "SELECT COUNT(*) FROM users") < 3 ||
-      scalar_int(*db, "SELECT COUNT(*) FROM projects") < 2) {
-    seed_demo_data(*db);
+  return 1;
+}
+
+static int initialize_admin_account(sqlite3 *db, const char *username, const char *password) {
+  int user_id;
+
+  if (!username || !username[0] || !password || !password[0]) {
+    fprintf(stderr, "管理员账号和密码不能为空\n");
+    return 0;
+  }
+  if (scalar_int(db, "SELECT COUNT(*) FROM users") > 0) {
+    fprintf(stderr, "数据库已有用户，拒绝重复初始化管理员\n");
+    return 0;
   }
 
+  user_id = insert_user_account(db, username, username, "admin", password, "", "", "", "", "", "active", "admin");
+  if (user_id <= 0) {
+    fprintf(stderr, "管理员创建失败\n");
+    return 0;
+  }
+  printf("管理员初始化成功：%s\n", username);
   return 1;
 }
 
@@ -1286,10 +1142,10 @@ static void load_stage_snapshot(sqlite3 *db, int project_id, int stage_no, Stage
     sqlite3_bind_int(stmt, 1, project_id);
     sqlite3_bind_int(stmt, 2, stage_no);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-      snprintf(snapshot->latest_deliverable_status, sizeof(snapshot->latest_deliverable_status), "%s", (const char *) sqlite3_column_text(stmt, 0));
-      snprintf(snapshot->latest_deliverable_version, sizeof(snapshot->latest_deliverable_version), "%s", (const char *) sqlite3_column_text(stmt, 1));
-      snprintf(snapshot->latest_deliverable_name, sizeof(snapshot->latest_deliverable_name), "%s", (const char *) sqlite3_column_text(stmt, 2));
-      snprintf(snapshot->latest_approval_comment, sizeof(snapshot->latest_approval_comment), "%s", (const char *) sqlite3_column_text(stmt, 3));
+      copy_sqlite_text(stmt, 0, snapshot->latest_deliverable_status, sizeof(snapshot->latest_deliverable_status));
+      copy_sqlite_text(stmt, 1, snapshot->latest_deliverable_version, sizeof(snapshot->latest_deliverable_version));
+      copy_sqlite_text(stmt, 2, snapshot->latest_deliverable_name, sizeof(snapshot->latest_deliverable_name));
+      copy_sqlite_text(stmt, 3, snapshot->latest_approval_comment, sizeof(snapshot->latest_approval_comment));
     }
   }
   sqlite3_finalize(stmt);
@@ -1305,8 +1161,8 @@ static void load_stage_snapshot(sqlite3 *db, int project_id, int stage_no, Stage
     sqlite3_bind_int(stmt, 1, project_id);
     sqlite3_bind_int(stmt, 2, stage_no);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-      snprintf(snapshot->latest_stage_audit_decision, sizeof(snapshot->latest_stage_audit_decision), "%s", (const char *) sqlite3_column_text(stmt, 0));
-      snprintf(snapshot->latest_stage_audit_comment, sizeof(snapshot->latest_stage_audit_comment), "%s", (const char *) sqlite3_column_text(stmt, 1));
+      copy_sqlite_text(stmt, 0, snapshot->latest_stage_audit_decision, sizeof(snapshot->latest_stage_audit_decision));
+      copy_sqlite_text(stmt, 1, snapshot->latest_stage_audit_comment, sizeof(snapshot->latest_stage_audit_comment));
     }
   }
   sqlite3_finalize(stmt);
@@ -1852,65 +1708,6 @@ static void append_stage_role_states(char *body, size_t size, size_t *off, const
   *off += (size_t) snprintf(body + *off, size - *off, "]");
 }
 
-static void handle_auth_quick_accounts(AppContext *app, SOCKET client) {
-  sqlite3_stmt *stmt = NULL;
-  char body[MAX_RESPONSE_SIZE];
-  size_t off = 0;
-  int first = 1;
-
-  off += (size_t) snprintf(body + off, sizeof(body) - off, "{\"items\":[");
-  if (sqlite3_prepare_v2(
-        app->db,
-        "SELECT id, role, username, name, quick_login_password, bio, company "
-        "FROM users "
-        "WHERE status = 'active' AND role IN ('admin','developer','client') AND COALESCE(quick_login_password, '') != '' "
-        "ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'developer' THEN 1 WHEN 'client' THEN 2 ELSE 3 END, id ASC",
-        -1,
-        &stmt,
-        NULL
-      ) == SQLITE_OK) {
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-      const char *role = (const char *) sqlite3_column_text(stmt, 1);
-      const char *username = (const char *) sqlite3_column_text(stmt, 2);
-      const char *name = (const char *) sqlite3_column_text(stmt, 3);
-      const char *password = (const char *) sqlite3_column_text(stmt, 4);
-      const char *bio = (const char *) sqlite3_column_text(stmt, 5);
-      const char *company = (const char *) sqlite3_column_text(stmt, 6);
-      const char *display_name = (name && name[0]) ? name : username;
-      const char *description = (bio && bio[0]) ? bio : ((company && company[0]) ? company : quick_login_role_description(role ? role : ""));
-      char safe_role[64];
-      char safe_display_name[256];
-      char safe_username[128];
-      char safe_password[128];
-      char safe_description[1024];
-
-      json_escape(role ? role : "", safe_role, sizeof(safe_role));
-      json_escape(display_name ? display_name : "", safe_display_name, sizeof(safe_display_name));
-      json_escape(username ? username : "", safe_username, sizeof(safe_username));
-      json_escape(password ? password : "", safe_password, sizeof(safe_password));
-      json_escape(description ? description : "", safe_description, sizeof(safe_description));
-
-      off += (size_t) snprintf(
-        body + off,
-        sizeof(body) - off,
-        "%s{\"id\":%d,\"role\":\"%s\",\"displayName\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"description\":\"%s\"}",
-        first ? "" : ",",
-        sqlite3_column_int(stmt, 0),
-        safe_role,
-        safe_display_name,
-        safe_username,
-        safe_password,
-        safe_description
-      );
-      first = 0;
-    }
-  }
-  sqlite3_finalize(stmt);
-
-  snprintf(body + off, sizeof(body) - off, "]}");
-  send_response(client, 200, "OK", body);
-}
-
 static void handle_auth_login(AppContext *app, SOCKET client, const HttpRequest *request) {
   char username[64];
   char password[64];
@@ -2032,10 +1829,9 @@ static void handle_auth_password(AppContext *app, SOCKET client, const HttpReque
   }
   sqlite3_finalize(stmt);
 
-  if (sqlite3_prepare_v2(app->db, "UPDATE users SET password_hash = ?, quick_login_password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(app->db, "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_text(stmt, 1, hash, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, new_password, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 3, user.id);
+    sqlite3_bind_int(stmt, 2, user.id);
     sqlite3_step(stmt);
   }
   sqlite3_finalize(stmt);
@@ -2383,11 +2179,10 @@ static void handle_user_password_reset(AppContext *app, SOCKET client, const Htt
 
   snprintf(salt, sizeof(salt), "user-reset-%d", user_id);
   make_password_hash(new_password, salt, hash);
-  if (sqlite3_prepare_v2(app->db, "UPDATE users SET password_hash = ?, password_salt = ?, quick_login_password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role IN ('developer','client')", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(app->db, "UPDATE users SET password_hash = ?, password_salt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role IN ('developer','client')", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_text(stmt, 1, hash, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, salt, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, new_password, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, user_id);
+    sqlite3_bind_int(stmt, 3, user_id);
     sqlite3_step(stmt);
   }
   sqlite3_finalize(stmt);
@@ -2467,7 +2262,10 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
   }
 
   if (strcmp(request->method, "GET") == 0) {
-    off += (size_t) snprintf(body + off, sizeof(body) - off, "{\"items\":[");
+    if (!append_format(body, sizeof(body), &off, "{\"items\":[")) {
+      send_message(client, 500, "Internal Server Error", "项目数据响应初始化失败");
+      return;
+    }
 
     if (is_admin(&user)) {
       sqlite3_prepare_v2(app->db,
@@ -2503,9 +2301,10 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
       json_escape((const char *) sqlite3_column_text(stmt, 6), developer_name, sizeof(developer_name));
       json_escape((const char *) sqlite3_column_text(stmt, 7), client_name, sizeof(client_name));
 
-      off += (size_t) snprintf(
-        body + off,
-        sizeof(body) - off,
+      if (!append_format(
+        body,
+        sizeof(body),
+        &off,
         "%s{\"id\":%d,\"name\":\"%s\",\"description\":\"%s\",\"status\":\"%s\",\"developerId\":%d,\"clientId\":%d,\"developerName\":\"%s\",\"clientName\":\"%s\"}",
         first ? "" : ",",
         sqlite3_column_int(stmt, 0),
@@ -2516,12 +2315,19 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
         sqlite3_column_int(stmt, 5),
         developer_name,
         client_name
-      );
+      )) {
+        sqlite3_finalize(stmt);
+        send_message(client, 500, "Internal Server Error", "项目数据过大，响应构建失败");
+        return;
+      }
       first = 0;
     }
     sqlite3_finalize(stmt);
 
-    snprintf(body + off, sizeof(body) - off, "]}");
+    if (!append_format(body, sizeof(body), &off, "]}")) {
+      send_message(client, 500, "Internal Server Error", "项目响应构建失败");
+      return;
+    }
     send_response(client, 200, "OK", body);
     return;
   }
@@ -2575,7 +2381,10 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
   }
 
   if (strcmp(request->method, "GET") == 0) {
-    off += (size_t) snprintf(body + off, sizeof(body) - off, "{\"items\":[");
+    if (!append_format(body, sizeof(body), &off, "{\"items\":[")) {
+      send_message(client, 500, "Internal Server Error", "工时数据响应初始化失败");
+      return;
+    }
     if (is_admin(&user)) {
       sqlite3_prepare_v2(app->db,
         "SELECT w.id, w.project_id, p.name, w.user_id, u.name, w.stage_no, w.work_date, w.hours, w.task_description, w.digest, w.evidence_status, w.tx_hash, w.created_at "
@@ -2623,9 +2432,10 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
       json_escape((const char *) sqlite3_column_text(stmt, 11), tx_hash, sizeof(tx_hash));
       json_escape((const char *) sqlite3_column_text(stmt, 12), created_at, sizeof(created_at));
 
-      off += (size_t) snprintf(
-        body + off,
-        sizeof(body) - off,
+      if (!append_format(
+        body,
+        sizeof(body),
+        &off,
         "%s{\"id\":%d,\"projectId\":%d,\"projectName\":\"%s\",\"userId\":%d,\"userName\":\"%s\",\"stageNo\":%d,\"workDate\":\"%s\",\"hours\":%.2f,\"taskDescription\":\"%s\",\"digest\":\"%s\",\"evidenceStatus\":\"%s\",\"txHash\":\"%s\",\"createdAt\":\"%s\"}",
         first ? "" : ",",
         sqlite3_column_int(stmt, 0),
@@ -2641,12 +2451,19 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
         status,
         tx_hash,
         created_at
-      );
+      )) {
+        sqlite3_finalize(stmt);
+        send_message(client, 500, "Internal Server Error", "工时数据过大，响应构建失败");
+        return;
+      }
       first = 0;
     }
     sqlite3_finalize(stmt);
 
-    snprintf(body + off, sizeof(body) - off, "]}");
+    if (!append_format(body, sizeof(body), &off, "]}")) {
+      send_message(client, 500, "Internal Server Error", "工时响应构建失败");
+      return;
+    }
     send_response(client, 200, "OK", body);
     return;
   }
@@ -2705,7 +2522,10 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
   }
 
   if (strcmp(request->method, "GET") == 0) {
-    off += (size_t) snprintf(body + off, sizeof(body) - off, "{\"items\":[");
+    if (!append_format(body, sizeof(body), &off, "{\"items\":[")) {
+      send_message(client, 500, "Internal Server Error", "交付物数据响应初始化失败");
+      return;
+    }
 
     if (is_admin(&user)) {
       sqlite3_prepare_v2(app->db,
@@ -2756,9 +2576,10 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
       json_escape((const char *) sqlite3_column_text(stmt, 12), confirmation_comment, sizeof(confirmation_comment));
       json_escape((const char *) sqlite3_column_text(stmt, 13), created_at, sizeof(created_at));
 
-      off += (size_t) snprintf(
-        body + off,
-        sizeof(body) - off,
+      if (!append_format(
+        body,
+        sizeof(body),
+        &off,
         "%s{\"id\":%d,\"projectId\":%d,\"projectName\":\"%s\",\"userId\":%d,\"userName\":\"%s\",\"stageNo\":%d,\"version\":\"%s\",\"fileName\":\"%s\",\"summary\":\"%s\",\"fileHash\":\"%s\",\"status\":\"%s\",\"txHash\":\"%s\",\"confirmationComment\":\"%s\",\"createdAt\":\"%s\"}",
         first ? "" : ",",
         sqlite3_column_int(stmt, 0),
@@ -2775,12 +2596,19 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
         tx_hash,
         confirmation_comment,
         created_at
-      );
+      )) {
+        sqlite3_finalize(stmt);
+        send_message(client, 500, "Internal Server Error", "交付物数据过大，响应构建失败");
+        return;
+      }
       first = 0;
     }
     sqlite3_finalize(stmt);
 
-    snprintf(body + off, sizeof(body) - off, "]}");
+    if (!append_format(body, sizeof(body), &off, "]}")) {
+      send_message(client, 500, "Internal Server Error", "交付物响应构建失败");
+      return;
+    }
     send_response(client, 200, "OK", body);
     return;
   }
@@ -4105,9 +3933,10 @@ static void handle_dashboard(AppContext *app, SOCKET client, const HttpRequest *
     subline = "查看待确认阶段，结合工时历史判断是否通过当前阶段交付。";
   }
 
-  off += (size_t) snprintf(
-    body + off,
-    sizeof(body) - off,
+  if (!append_format(
+    body,
+    sizeof(body),
+    &off,
     "{\"headline\":\"%s\",\"subline\":\"%s\",\"metrics\":["
     "{\"label\":\"%s\",\"value\":%d,\"description\":\"%s\"},"
     "{\"label\":\"%s\",\"value\":%d,\"description\":\"%s\"},"
@@ -4128,7 +3957,10 @@ static void handle_dashboard(AppContext *app, SOCKET client, const HttpRequest *
     is_admin(&user) ? "待总审计" : (is_developer(&user) ? "待阶段审计项目" : "待管理员阶段审计"),
     metric_d,
     is_admin(&user) ? "当前已满足总审计条件的活跃项目数" : (is_developer(&user) ? "当前被管理员阶段审计阻塞的项目数" : "客户已通过、等待管理员阶段审计的阶段数")
-  );
+  )) {
+    send_message(client, 500, "Internal Server Error", "仪表盘数据过大，响应构建失败");
+    return;
+  }
 
   if (is_client_role(&user)) {
     sqlite3_prepare_v2(app->db,
@@ -4168,9 +4000,10 @@ static void handle_dashboard(AppContext *app, SOCKET client, const HttpRequest *
     json_escape((const char *) sqlite3_column_text(stmt, 3), status, sizeof(status));
     json_escape((const char *) sqlite3_column_text(stmt, 4), description, sizeof(description));
 
-    off += (size_t) snprintf(
-      body + off,
-      sizeof(body) - off,
+    if (!append_format(
+      body,
+      sizeof(body),
+      &off,
       "%s{\"id\":%d,\"projectName\":\"%s\",\"title\":\"%s\",\"status\":\"%s\",\"description\":\"%s\"}",
       first ? "" : ",",
       sqlite3_column_int(stmt, 0),
@@ -4178,12 +4011,19 @@ static void handle_dashboard(AppContext *app, SOCKET client, const HttpRequest *
       title,
       status,
       description
-    );
+    )) {
+      sqlite3_finalize(stmt);
+      send_message(client, 500, "Internal Server Error", "待办数据过大，响应构建失败");
+      return;
+    }
     first = 0;
   }
   sqlite3_finalize(stmt);
 
-  off += (size_t) snprintf(body + off, sizeof(body) - off, "],\"recentTransactions\":[");
+  if (!append_format(body, sizeof(body), &off, "],\"recentTransactions\":[")) {
+    send_message(client, 500, "Internal Server Error", "仪表盘数据过大，响应构建失败");
+    return;
+  }
   first = 1;
 
   if (is_admin(&user)) {
@@ -4203,9 +4043,10 @@ static void handle_dashboard(AppContext *app, SOCKET client, const HttpRequest *
     json_escape((const char *) sqlite3_column_text(stmt, 3), status, sizeof(status));
     json_escape((const char *) sqlite3_column_text(stmt, 4), created_at, sizeof(created_at));
 
-    off += (size_t) snprintf(
-      body + off,
-      sizeof(body) - off,
+    if (!append_format(
+      body,
+      sizeof(body),
+      &off,
       "%s{\"id\":%d,\"type\":\"%s\",\"txHash\":\"%s\",\"status\":\"%s\",\"createdAt\":\"%s\"}",
       first ? "" : ",",
       sqlite3_column_int(stmt, 0),
@@ -4213,12 +4054,19 @@ static void handle_dashboard(AppContext *app, SOCKET client, const HttpRequest *
       tx_hash,
       status,
       created_at
-    );
+    )) {
+      sqlite3_finalize(stmt);
+      send_message(client, 500, "Internal Server Error", "存证数据过大，响应构建失败");
+      return;
+    }
     first = 0;
   }
   sqlite3_finalize(stmt);
 
-  snprintf(body + off, sizeof(body) - off, "]}");
+  if (!append_format(body, sizeof(body), &off, "]}")) {
+    send_message(client, 500, "Internal Server Error", "仪表盘响应构建失败");
+    return;
+  }
   send_response(client, 200, "OK", body);
 }
 
@@ -4428,8 +4276,6 @@ static void route_request(AppContext *app, SOCKET client, const HttpRequest *req
     send_message(client, 200, "OK", "backend running");
   } else if (strcmp(request->path, "/api/auth/login") == 0 && strcmp(request->method, "POST") == 0) {
     handle_auth_login(app, client, request);
-  } else if (strcmp(request->path, "/api/auth/quick-accounts") == 0 && strcmp(request->method, "GET") == 0) {
-    handle_auth_quick_accounts(app, client);
   } else if (strcmp(request->path, "/api/auth/me") == 0 && strcmp(request->method, "GET") == 0) {
     handle_auth_me(app, client, request);
   } else if (strcmp(request->path, "/api/auth/profile") == 0 && strcmp(request->method, "PUT") == 0) {
@@ -4495,7 +4341,7 @@ static void route_request(AppContext *app, SOCKET client, const HttpRequest *req
   }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   WSADATA wsa_data;
   SOCKET server_socket;
   struct sockaddr_in server_addr;
@@ -4504,6 +4350,14 @@ int main(void) {
   if (!init_database(&app.db)) {
     fprintf(stderr, "Failed to initialize database\n");
     return 1;
+  }
+
+  if (argc > 1 && strcmp(argv[1], "--init-admin") == 0) {
+    const char *username = argc > 2 ? argv[2] : getenv("TRUST_WORK_ADMIN_USERNAME");
+    const char *password = argc > 3 ? argv[3] : getenv("TRUST_WORK_ADMIN_PASSWORD");
+    int ok = initialize_admin_account(app.db, username, password);
+    sqlite3_close(app.db);
+    return ok ? 0 : 1;
   }
 
   if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
@@ -4551,3 +4405,4 @@ int main(void) {
   WSACleanup();
   return 0;
 }
+

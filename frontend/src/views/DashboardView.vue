@@ -12,3 +12,4 @@ onMounted(() => {
 <template>
   <div class="route-redirect-placeholder" aria-hidden="true" />
 </template>
+

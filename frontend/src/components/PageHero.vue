@@ -22,7 +22,7 @@ defineProps({
   },
   size: {
     type: String,
-    default: "default",
+    default: "compact",
   },
   badges: {
     type: Array,
@@ -46,7 +46,25 @@ defineProps({
         <span v-for="badge in badges" :key="badge" class="hero-inline-badge">{{ badge }}</span>
       </div>
 
-      <div v-if="stats.length" class="hero-stat-row">
+      <div
+        v-if="variant === 'minimal' && (stats.length || $slots.default)"
+        class="page-hero-support-grid"
+        :class="{ 'has-stats': stats.length, 'has-visual': !!$slots.default }"
+      >
+        <div v-if="stats.length" class="hero-stat-row hero-stat-row-inline">
+          <article v-for="item in stats" :key="item.label" class="hero-stat-card">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+            <small>{{ item.helper }}</small>
+          </article>
+        </div>
+
+        <div v-if="$slots.default" class="page-hero-inline-visual">
+          <slot />
+        </div>
+      </div>
+
+      <div v-else-if="stats.length" class="hero-stat-row">
         <article v-for="item in stats" :key="item.label" class="hero-stat-card">
           <span>{{ item.label }}</span>
           <strong>{{ item.value }}</strong>
@@ -59,7 +77,7 @@ defineProps({
       </div>
     </div>
 
-    <div v-if="$slots.default" class="page-hero-visual">
+    <div v-if="$slots.default && variant !== 'minimal'" class="page-hero-visual">
       <slot />
     </div>
   </section>

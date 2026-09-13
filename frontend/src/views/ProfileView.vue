@@ -1,16 +1,14 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import AppShell from "../components/AppShell.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { useAuthStore } from "../stores/auth";
-import { useExperienceStore } from "../stores/experience";
 import { useWalletStore } from "../stores/wallet";
 
 const router = useRouter();
 const auth = useAuthStore();
-const experience = useExperienceStore();
 const wallet = useWalletStore();
 
 const profileForm = reactive({
@@ -31,8 +29,8 @@ const previewUrl = ref("");
 const avatarUrl = computed(() => previewUrl.value || auth.user?.avatarUrl || "");
 const heroStats = computed(() => [
   { label: "当前角色", value: auth.user?.role || "guest", helper: "该身份决定你在系统中的可见页面与操作范围" },
-  { label: "登录账号", value: auth.user?.username || "-", helper: "用于登录和快捷切换的账号标识" },
-  { label: "钱包状态", value: wallet.connected ? "已连接" : "未连接", helper: wallet.connected ? wallet.connectionLabel : "连接钱包后可推进链上演示存证" },
+  { label: "登录账号", value: auth.user?.username || "-", helper: "用于登录的账号标识" },
+  { label: "钱包状态", value: wallet.connected ? "已连接" : "未连接", helper: wallet.connected ? wallet.connectionLabel : "连接钱包后可提交链上存证" },
 ]);
 
 function syncForm() {
@@ -99,33 +97,21 @@ async function logout() {
   router.push("/login");
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: auth.user?.name || auth.user?.username || "数字身份卡",
-    stageLabel: wallet.connected ? wallet.chainName || "钱包已连接" : "钱包未连接",
-    cue: "把头像、角色、账号、钱包和安全操作整合为一张可展示、可管理的数字身份卡。",
-    tone: auth.role || "neutral",
-  });
-});
 
-onMounted(async () => {
-  try {
-    await auth.refreshMe();
-  } catch (error) {
-    errorMessage.value = error.message;
-  }
-  syncForm();
-});
+watch(
+  () => auth.user,
+  () => syncForm(),
+  { immediate: true, deep: true },
+);
 
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="身份资料"
-      title="把头像、账号、角色与安全操作收进一张统一的数字身份卡。"
-      description="个人中心负责维护当前身份的展示信息、登录资料和密码安全，让钱包状态与账号资料在同一处保持清晰。"
+      title="维护身份资料与账户安全。"
+      description="在一处更新头像、账号信息、钱包状态与密码设置。"
       :tone="auth.role"
       variant="minimal"
       :stats="heroStats"
@@ -133,17 +119,6 @@ onBeforeUnmount(() => experience.resetPageContext());
       <template #actions>
         <button class="button" type="button" @click="saveProfile">保存资料</button>
       </template>
-
-      <article class="hero-side-card">
-        <div class="identity-avatar-card">
-          <img v-if="avatarUrl" :src="avatarUrl" alt="avatar" class="profile-avatar" />
-          <div v-else class="profile-avatar fallback">{{ (auth.user?.name || "用户").slice(0, 2) }}</div>
-          <div>
-            <strong>{{ auth.user?.name || auth.user?.username }}</strong>
-            <p>{{ auth.user?.role }} ｜ {{ auth.user?.company }}</p>
-          </div>
-        </div>
-      </article>
     </PageHero>
 
     <div class="showcase-grid showcase-grid-secondary">
@@ -151,7 +126,7 @@ onBeforeUnmount(() => experience.resetPageContext());
         <div class="section-heading">
           <div>
             <div class="eyebrow">基础资料</div>
-            <h3>资料</h3>
+            <h3>基本资料</h3>
           </div>
         </div>
 
@@ -188,7 +163,7 @@ onBeforeUnmount(() => experience.resetPageContext());
         <div class="section-heading">
           <div>
             <div class="eyebrow">账号安全</div>
-            <h3>安全</h3>
+            <h3>账号安全</h3>
           </div>
         </div>
 
@@ -231,3 +206,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     <p v-if="errorMessage" class="feedback error-text">{{ errorMessage }}</p>
   </AppShell>
 </template>
+

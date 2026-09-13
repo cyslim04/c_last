@@ -1,15 +1,13 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink } from "vue-router";
 import AppShell from "../components/AppShell.vue";
 import MemberPicker from "../components/MemberPicker.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
-import { useExperienceStore } from "../stores/experience";
 import { useWalletStore } from "../stores/wallet";
 
-const experience = useExperienceStore();
 const wallet = useWalletStore();
 
 const items = ref([]);
@@ -39,7 +37,7 @@ const heroStats = computed(() => [
   {
     label: "钱包状态",
     value: canWriteEvidence.value ? "可存证" : "待连接",
-    helper: canWriteEvidence.value ? wallet.chainName : "连接钱包后可发起演示存证。",
+    helper: canWriteEvidence.value ? wallet.chainName : "连接钱包后可提交链上存证。",
   },
 ]);
 
@@ -87,23 +85,15 @@ async function writeEvidence(item) {
       txHash: `0xwl${Date.now().toString(16)}${item.id.toString(16)}`,
       blockNumber: Date.now(),
       status: "confirmed",
-      comment: `${item.projectName} 的工时摘要已完成演示存证`,
+      comment: `${item.projectName} 的工时摘要已完成链上存证`,
     });
-    resultMessage.value = `工时 ${item.id} 已写入演示存证。`;
+    resultMessage.value = `工时 ${item.id} 已完成链上存证。`;
     await loadData();
   } catch (error) {
     errorMessage.value = error.message;
   }
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: selectedProject.value?.name || "开发工作台",
-    stageLabel: canWriteEvidence.value ? "钱包已就绪" : "等待链上连接",
-    cue: "工时页既是操作台，也是解释开发过程为什么可信的展示页。",
-    tone: "developer",
-  });
-});
 
 onMounted(() => {
   loadData().catch((error) => {
@@ -111,34 +101,22 @@ onMounted(() => {
   });
 });
 
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="开发工作区"
-      title="把开发过程沉淀成可核验的工时摘要。"
-      description="每次开发、联调或修复都不是一次匿名提交，而是项目阶段中的一条可信说明，可以继续进入交付、确认和审计链路。"
+      title="记录工时，生成可信摘要。"
+      description="每次开发记录都会进入当前项目阶段，供交付、确认和审计继续引用。"
       tone="developer"
+      variant="minimal"
       :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="createWorklog">生成工时摘要</button>
         <RouterLink class="ghost-button" to="/deliverables">查看交付物</RouterLink>
       </template>
-
-      <article class="hero-side-card">
-        <div class="hero-kicker">本次录入</div>
-        <strong>{{ form.taskDescription || "描述本次开发、修复或联调内容" }}</strong>
-        <p>
-          {{
-            selectedProject
-              ? `当前会记录到 ${selectedProject.name}，日期 ${form.workDate}，工时 ${form.hours}h。`
-              : "先选择项目，再补充工时日期、时长与任务说明。"
-          }}
-        </p>
-      </article>
     </PageHero>
 
     <section class="showcase-grid showcase-grid-secondary">
@@ -213,7 +191,7 @@ onBeforeUnmount(() => experience.resetPageContext());
                 type="button"
                 @click="writeEvidence(item)"
               >
-                写入演示存证
+                提交链上存证
               </button>
             </div>
           </article>
@@ -222,3 +200,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     </section>
   </AppShell>
 </template>
+

@@ -16,8 +16,27 @@ async function request(path, options = {}) {
     ...(options.headers || {}),
   };
 
-  const response = await fetch(buildUrl(path), { ...options, headers });
-  const payload = await response.json().catch(() => ({}));
+  let response;
+  try {
+    response = await fetch(buildUrl(path), { ...options, headers });
+  } catch (error) {
+    // 浏览器在后端未启动、端口不可达或网络被拦截时只会抛出
+    // “Failed to fetch”，这里转换为可操作的中文提示，避免用户误以为是表单数据错误。
+    if (error?.name === "AbortError") {
+      throw error;
+    }
+    throw new Error(`无法连接后端服务（${API_BASE}）。请先启动 backend/run.ps1 后重试。`);
+  }
+  const rawText = await response.text();
+  let payload = {};
+
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      throw new Error("后端返回了无效数据，请稍后重试");
+    }
+  }
 
   if (!response.ok) {
     throw new Error(payload.message || "请求失败");
@@ -31,9 +50,6 @@ export { API_BASE, buildUrl };
 export const api = {
   login(payload) {
     return request("/api/auth/login", { method: "POST", body: JSON.stringify(payload) });
-  },
-  getQuickAccounts() {
-    return request("/api/auth/quick-accounts");
   },
   getMe() {
     return request("/api/auth/me");

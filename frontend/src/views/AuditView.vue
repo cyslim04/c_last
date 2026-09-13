@@ -1,13 +1,10 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, Teleport, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, Teleport } from "vue";
 import AppShell from "../components/AppShell.vue";
 import PageHero from "../components/PageHero.vue";
-import SignalRing from "../components/SignalRing.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
-import { useExperienceStore } from "../stores/experience";
 
-const experience = useExperienceStore();
 
 const audit = ref({
   transactions: [],
@@ -74,11 +71,6 @@ const heroStats = computed(() => [
     helper: "后台日志与链上回写用于支撑审计解释层",
   },
 ]);
-
-const auditReadiness = computed(() => {
-  const openWork = audit.value.stageQueue.length + audit.value.finalQueue.length;
-  return Math.max(18, Math.min(100, 100 - openWork * 14));
-});
 
 function selectStage(item) {
   selectedStageKey.value = `${item.projectId}-${item.stageNo}`;
@@ -176,55 +168,23 @@ async function submitFinalAudit(decision) {
   }
 }
 
-watchEffect(() => {
-  experience.setPageContext({
-    projectName: selectedFinalProject.value?.projectName || selectedStage.value?.projectName || "审计剧场",
-    stageLabel: audit.value.finalQueue.length ? `${audit.value.finalQueue.length} 个总审计待决` : "阶段与总审计态势",
-    cue: "让审计动作拥有明确的证据依据、状态影响和链上留痕，而不是普通按钮提交。",
-    tone: "admin",
-  });
-});
 
 onMounted(loadAudit);
-onBeforeUnmount(() => experience.resetPageContext());
 </script>
 
 <template>
   <AppShell>
     <PageHero
       eyebrow="管理员工作区"
-      title="把阶段决策与最终审计组织成可解释的可信结论。"
-      description="审计页不只是执行通过或驳回，而是把当前待决事项、审计准备度、历史留痕和最终结论组织进同一块业务舞台。"
+      title="审计阶段结果，给出最终结论。"
+      description="集中处理待阶段审计、待总审计项目，以及对应留痕。"
       tone="admin"
+      variant="minimal"
       :stats="heroStats"
     >
       <template #actions>
         <button class="button" type="button" @click="loadAudit">刷新审计态势</button>
       </template>
-
-      <div class="hero-visual-stack">
-        <SignalRing
-          title="审计准备度"
-          :value="auditReadiness"
-          :max="100"
-          subtitle="审计准备度会随着待审动作减少而提升，最终项目会收敛到完整闭环。"
-          tone="admin"
-        />
-
-        <article class="hero-side-card">
-          <div class="hero-kicker">当前主动作</div>
-          <strong>{{ selectedStage?.projectName || selectedFinalProject?.projectName || "请选择一条待审记录" }}</strong>
-          <p>
-            {{
-              selectedStage
-                ? `当前聚焦阶段 ${selectedStage.stageNo}，可以对客户已确认的证据发起阶段审计。`
-                : selectedFinalProject
-                  ? "当前聚焦总审计项目，可以对已完成阶段闭环的项目给出最终结论。"
-                  : "在下方先选择阶段审计或最终总审计对象，再打开决策面板。"
-            }}
-          </p>
-        </article>
-      </div>
     </PageHero>
 
     <section class="showcase-grid showcase-grid-audit">
@@ -463,3 +423,4 @@ onBeforeUnmount(() => experience.resetPageContext());
     </Teleport>
   </AppShell>
 </template>
+

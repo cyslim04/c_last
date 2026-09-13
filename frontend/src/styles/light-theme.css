@@ -160,6 +160,12 @@
   background: rgba(255, 255, 255, 0.92);
   border-color: var(--border);
   box-shadow: var(--shadow-sm);
+  border-radius: 16px;
+}
+
+[data-theme="light"] .nav-link-topbar,
+[data-theme="light"] .brand-mark-topbar {
+  border-radius: 12px;
 }
 
 [data-theme="light"] .wallet-indicator {
@@ -593,4 +599,261 @@
   background: rgba(196, 112, 105, 0.12);
   border-color: rgba(196, 112, 105, 0.32);
   color: var(--danger);
+}
+
+/* 业务后台布局基线：覆盖历史展示样式，统一页面密度与断点行为。 */
+[data-theme="light"] .page-slot {
+  width: min(100%, 1400px);
+  padding: 24px clamp(16px, 3vw, 40px) 48px;
+  gap: 24px;
+}
+
+[data-theme="light"] .home-view-editorial {
+  gap: 20px;
+}
+
+[data-theme="light"] .home-showcase-board {
+  gap: 20px;
+  border-radius: var(--radius-xl);
+}
+
+[data-theme="light"] .home-showcase-section {
+  gap: 18px;
+  padding: 22px;
+  border-radius: var(--radius-xl);
+}
+
+[data-theme="light"] .home-showcase-hero {
+  min-height: 0;
+}
+
+[data-theme="light"] .home-showcase-hero-inner {
+  min-height: 0;
+  padding: 24px;
+  gap: 24px;
+}
+
+[data-theme="light"] .home-showcase-hero-copy h2 {
+  max-width: 18ch;
+  font-size: clamp(1.9rem, 3vw, 2.8rem);
+}
+
+[data-theme="light"] .home-hero-orbit {
+  min-height: 240px;
+}
+
+[data-theme="light"] .reveal-on-scroll {
+  opacity: 1;
+  transform: none;
+  transition: none;
+}
+
+[data-theme="light"] .stride-footer {
+  margin-top: 20px;
+}
+
+[data-theme="light"] .page-hero,
+[data-theme="light"] .page-hero.variant-minimal {
+  display: block;
+  min-height: 0;
+  margin: 0;
+  padding: 24px 28px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+[data-theme="light"] .page-hero::before,
+[data-theme="light"] .page-hero::after {
+  display: none;
+}
+
+[data-theme="light"] .page-hero-copy {
+  max-width: none;
+  padding-right: 0;
+  gap: 12px;
+}
+
+[data-theme="light"] .page-hero h2,
+[data-theme="light"] .page-hero.variant-minimal h2 {
+  max-width: 32ch;
+  font-size: clamp(1.8rem, 2.8vw, 2.65rem);
+  line-height: 1.16;
+  letter-spacing: -0.035em;
+}
+
+[data-theme="light"] .page-hero-description {
+  max-width: 70ch;
+  font-size: 0.94rem;
+  line-height: 1.6;
+}
+
+[data-theme="light"] .hero-stat-row,
+[data-theme="light"] .page-hero.variant-minimal .hero-stat-row,
+[data-theme="light"] .page-hero.variant-minimal .hero-stat-row-inline {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-top: 4px;
+}
+
+[data-theme="light"] .hero-stat-card {
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+[data-theme="light"] .showcase-grid,
+[data-theme="light"] .showcase-grid-secondary,
+[data-theme="light"] .showcase-grid-audit,
+[data-theme="light"] .showcase-grid-dashboard,
+[data-theme="light"] .showcase-grid-flow,
+[data-theme="light"] .showcase-grid-audit-bottom {
+  margin-top: 0;
+  gap: 20px;
+  align-items: start;
+}
+
+[data-theme="light"] .showcase-grid-secondary > .panel,
+[data-theme="light"] .showcase-grid-secondary > section,
+[data-theme="light"] .showcase-grid-audit > .panel,
+[data-theme="light"] .showcase-grid-audit > section,
+[data-theme="light"] .showcase-grid-audit-bottom > .panel,
+[data-theme="light"] .showcase-grid-audit-bottom > section {
+  align-self: start;
+  min-width: 0;
+}
+
+[data-theme="light"] .panel {
+  padding: 22px;
+  gap: 18px;
+  border-radius: var(--radius-xl);
+}
+
+[data-theme="light"] .section-heading h3 {
+  font-size: clamp(1.25rem, 2vw, 1.75rem);
+  line-height: 1.2;
+}
+
+[data-theme="light"] .member-context-meta {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  min-width: 0;
+  text-align: right;
+}
+
+[data-theme="light"] .form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+
+[data-theme="light"] .form-grid .field:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+[data-theme="light"] .field input,
+[data-theme="light"] .field textarea {
+  min-width: 0;
+  padding: 11px 13px;
+}
+
+[data-theme="light"] .field textarea {
+  min-height: 104px;
+}
+
+[data-theme="light"] .topbar {
+  padding-inline: clamp(16px, 3vw, 32px);
+}
+
+[data-theme="light"] .topbar-main-global,
+[data-theme="light"] .topbar-actions-global {
+  min-height: 72px;
+}
+
+[data-theme="light"] .topbar-actions-global {
+  gap: 10px;
+}
+
+[data-theme="light"] .nav-list-topbar {
+  gap: 4px;
+}
+
+[data-theme="light"] .nav-link-topbar {
+  min-height: 40px;
+  padding-inline: 10px;
+  font-size: 0.9rem;
+}
+
+[data-theme="light"] .wallet-pill,
+[data-theme="light"] .session-chip {
+  min-width: 0;
+  max-width: min(260px, 28vw);
+}
+
+@media (max-width: 1080px) {
+  [data-theme="light"] .page-slot {
+    padding-inline: 20px;
+  }
+
+  [data-theme="light"] .showcase-grid-secondary,
+  [data-theme="light"] .showcase-grid-dashboard,
+  [data-theme="light"] .showcase-grid-flow,
+  [data-theme="light"] .showcase-grid-audit,
+  [data-theme="light"] .showcase-grid-audit-bottom {
+    grid-template-columns: 1fr;
+  }
+
+  [data-theme="light"] .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  [data-theme="light"] .form-grid .field:has(textarea) {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  [data-theme="light"] .page-slot {
+    padding: 16px 16px 32px;
+    gap: 16px;
+  }
+
+  [data-theme="light"] .page-hero,
+  [data-theme="light"] .page-hero.variant-minimal,
+  [data-theme="light"] .panel {
+    padding: 18px;
+    border-radius: var(--radius-lg);
+  }
+
+  [data-theme="light"] .page-hero h2,
+  [data-theme="light"] .page-hero.variant-minimal h2 {
+    font-size: clamp(1.55rem, 7vw, 2rem);
+  }
+
+  [data-theme="light"] .hero-stat-row,
+  [data-theme="light"] .page-hero.variant-minimal .hero-stat-row,
+  [data-theme="light"] .page-hero.variant-minimal .hero-stat-row-inline {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  [data-theme="light"] .hero-action-row,
+  [data-theme="light"] .button-row {
+    width: 100%;
+  }
+
+  [data-theme="light"] .hero-action-row > *,
+  [data-theme="light"] .button-row > .button,
+  [data-theme="light"] .button-row > .secondary-button,
+  [data-theme="light"] .button-row > .ghost-button {
+    flex: 1 1 100%;
+  }
+
+  [data-theme="light"] .wallet-pill,
+  [data-theme="light"] .session-chip {
+    width: 100%;
+    max-width: none;
+  }
+
+  [data-theme="light"] .member-context-meta {
+    justify-items: start;
+    text-align: left;
+  }
 }
