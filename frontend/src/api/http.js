@@ -51,6 +51,12 @@ export const api = {
   login(payload) {
     return request("/api/auth/login", { method: "POST", body: JSON.stringify(payload) });
   },
+  getDemoAccounts() {
+    return request("/api/auth/demo-accounts");
+  },
+  demoLogin(userId) {
+    return request("/api/auth/demo-login", { method: "POST", body: JSON.stringify({ userId }) });
+  },
   getMe() {
     return request("/api/auth/me");
   },
@@ -68,6 +74,22 @@ export const api = {
   },
   bindWallet(payload) {
     return request("/api/auth/wallet", { method: "POST", body: JSON.stringify(payload) });
+  },
+  getChainConfig() {
+    return request("/api/chain/config");
+  },
+  verifyEvidence(payload) {
+    return request("/api/evidence", { method: "POST", body: JSON.stringify(payload) });
+  },
+  getMigration(projectId) {
+    const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    return request(`/api/chain/migration${suffix}`);
+  },
+  previewMigration(projectId) {
+    return request("/api/chain/migration/preview", { method: "POST", body: JSON.stringify({ projectId }) });
+  },
+  startMigration(projectId) {
+    return request("/api/chain/migration/start", { method: "POST", body: JSON.stringify({ projectId }) });
   },
   getDashboard() {
     return request("/api/dashboard");

@@ -6,6 +6,19 @@ $ErrorActionPreference = "Stop"
 Push-Location $PSScriptRoot
 try {
 
+$chainEnvPath = Join-Path $PSScriptRoot ".env"
+if (Test-Path $chainEnvPath) {
+  Get-Content $chainEnvPath | ForEach-Object {
+    $entry = $_.Trim()
+    if ($entry -and -not $entry.StartsWith("#") -and $entry.Contains("=")) {
+      $key, $value = $entry.Split("=", 2)
+      if ($key.Trim() -match '^TRUST_WORK_(RPC|CONTRACT)_(31337|11155111)$') {
+        [Environment]::SetEnvironmentVariable($key.Trim(), $value.Trim(), "Process")
+      }
+    }
+  }
+}
+
 $sqliteBin = "C:\Users\yce\.codegeex\mamba\envs\codegeex-agent\Library\bin"
 $env:PATH = "$sqliteBin;$env:PATH"
 

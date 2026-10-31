@@ -434,10 +434,28 @@
 }
 
 [data-theme="light"] .auth-card,
-[data-theme="light"] .quick-login-compact-panel {
+[data-theme="light"] .quick-login-compact-panel,
+[data-theme="light"] .login-demo-panel {
   background: var(--panel);
   border-color: var(--border);
   box-shadow: var(--shadow-lg);
+}
+
+[data-theme="light"] .login-demo-search input,
+[data-theme="light"] .login-demo-account {
+  color: var(--text);
+  background: var(--panel-strong);
+  border-color: var(--border);
+}
+
+[data-theme="light"] .login-demo-account:hover:not(:disabled) {
+  background: rgba(var(--role-rgb), 0.08);
+  border-color: rgba(var(--role-rgb), 0.3);
+}
+
+[data-theme="light"] .login-demo-message {
+  color: var(--subtle);
+  border-color: var(--border-strong);
 }
 
 [data-theme="light"] .home-showcase-board {

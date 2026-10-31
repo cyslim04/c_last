@@ -4,6 +4,7 @@
 #include <sqlite3.h>
 
 #include "../include/sha256.h"
+#include "../include/chain_rpc.h"
 
 #include <ctype.h>
 #include <direct.h>
@@ -21,12 +22,15 @@
 
 typedef struct {
   sqlite3 *db;
+  int demo_quick_login_enabled;
+  int server_port;
 } AppContext;
 
 typedef struct {
   char method[8];
   char path[512];
   char authorization[256];
+  char origin[256];
   char body[MAX_BODY_SIZE];
 } HttpRequest;
 
@@ -57,6 +61,9 @@ typedef struct {
   int deliverable_count;
   int evidence_count;
 } StageSnapshot;
+
+static int latest_deliverable_id_for_stage(sqlite3 *db, int project_id, int stage_no);
+static void insert_approval(sqlite3 *db, int deliverable_id, int client_id, int approved, const char *comment, const char *tx_hash, const char *chain_id, long long block_number);
 
 static void json_escape(const char *input, char *output, size_t size) {
   size_t i = 0;
@@ -225,9 +232,214 @@ static int append_format(char *buffer, size_t size, size_t *off, const char *for
   return 1;
 }
 
+static int table_has_column(sqlite3 *db, const char *table, const char *column) {
+  sqlite3_stmt *stmt = NULL;
+  char sql[128];
+  int found = 0;
+
+  snprintf(sql, sizeof(sql), "PRAGMA table_info(%s)", table);
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      if (strcmp((const char *) sqlite3_column_text(stmt, 1), column) == 0) {
+        found = 1;
+        break;
+      }
+    }
+  }
+  sqlite3_finalize(stmt);
+  return found;
+}
+
+static int json_get_long_long(const char *json, const char *key, long long *value) {
+  char pattern[80];
+  char *start;
+  char *cursor;
+
+  snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+  start = strstr((char *) json, pattern);
+  if (!start) {
+    return 0;
+  }
+  cursor = strchr(start + strlen(pattern), ':');
+  if (!cursor) {
+    return 0;
+  }
+  cursor++;
+  while (*cursor && isspace((unsigned char) *cursor)) {
+    cursor++;
+  }
+  if (*cursor == '\"') {
+    cursor++;
+    *value = strtoll(cursor, NULL, 10);
+    return 1;
+  }
+  *value = strtoll(cursor, NULL, 10);
+  return 1;
+}
+
+static void lower_copy(const char *input, char *output, size_t size) {
+  size_t i;
+  if (!output || size == 0) {
+    return;
+  }
+  if (input != output) {
+    snprintf(output, size, "%s", input ? input : "");
+  }
+  for (i = 0; output[i]; i++) {
+    output[i] = (char) tolower((unsigned char) output[i]);
+  }
+}
+
+static int valid_tx_hash(const char *hash) {
+  size_t i;
+  if (!hash || strlen(hash) != 66 || hash[0] != '0' || (hash[1] != 'x' && hash[1] != 'X')) {
+    return 0;
+  }
+  for (i = 2; i < 66; i++) {
+    if (!isxdigit((unsigned char) hash[i])) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static void hex_uint_word(unsigned long long value, char output[67]) {
+  snprintf(output, 67, "0x%064llx", value);
+}
+
+static void hex_address_word(const char *address, char output[67]) {
+  char lower[64];
+  size_t length;
+  lower_copy(address, lower, sizeof(lower));
+  length = strlen(lower);
+  if (length >= 42 && lower[0] == '0' && lower[1] == 'x') {
+    memset(output, '0', 26);
+    output[0] = '0';
+    output[1] = 'x';
+    memcpy(output + 26, lower + 2, 40);
+    output[66] = '\0';
+  } else {
+    output[0] = '\0';
+  }
+}
+
+static void hex_bytes32_word(const char *hex, char output[67]) {
+  char normalized[65];
+  size_t length;
+  const char *source = hex ? hex : "";
+  if (source[0] == '0' && (source[1] == 'x' || source[1] == 'X')) {
+    source += 2;
+  }
+  length = strlen(source);
+  if (length != 64) {
+    output[0] = '\0';
+    return;
+  }
+  lower_copy(source, normalized, sizeof(normalized));
+  snprintf(output, 67, "0x%s", normalized);
+}
+
+static int json_get_string_range(const char *start, const char *end, const char *key, char *output, size_t size) {
+  char pattern[96];
+  const char *found;
+  const char *cursor;
+  size_t length;
+
+  if (!start || !end || !key || !output || size == 0) {
+    return 0;
+  }
+  snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+  found = strstr(start, pattern);
+  if (!found || found >= end) {
+    return 0;
+  }
+  cursor = strchr(found + strlen(pattern), ':');
+  if (!cursor || cursor >= end) {
+    return 0;
+  }
+  cursor++;
+  while (cursor < end && isspace((unsigned char) *cursor)) {
+    cursor++;
+  }
+  if (cursor >= end || *cursor != '\"') {
+    return 0;
+  }
+  cursor++;
+  length = 0;
+  while (cursor < end && *cursor != '\"' && length + 1 < size) {
+    if (*cursor == '\\' && cursor + 1 < end) {
+      cursor++;
+    }
+    output[length++] = *cursor++;
+  }
+  output[length] = '\0';
+  return 1;
+}
+
+static const char *json_matching_bracket(const char *start, const char *limit) {
+  int depth = 0;
+  int quoted = 0;
+  const char *cursor;
+  for (cursor = start; cursor && cursor < limit && *cursor; cursor++) {
+    if (*cursor == '"' && (cursor == start || cursor[-1] != '\\')) {
+      quoted = !quoted;
+    } else if (!quoted && *cursor == '[') {
+      depth++;
+    } else if (!quoted && *cursor == ']') {
+      depth--;
+      if (depth == 0) {
+        return cursor;
+      }
+    }
+  }
+  return NULL;
+}
+
+static int rpc_result_range(const char *json, const char **start, const char **end) {
+  const char *result = strstr(json, "\"result\"");
+  const char *cursor;
+  int depth = 0;
+  int quoted = 0;
+  if (!result) {
+    return 0;
+  }
+  cursor = strchr(result, ':');
+  if (!cursor) {
+    return 0;
+  }
+  cursor++;
+  while (*cursor && isspace((unsigned char) *cursor)) {
+    cursor++;
+  }
+  if (*cursor != '{') {
+    return 0;
+  }
+  *start = cursor;
+  for (; *cursor; cursor++) {
+    if (*cursor == '\"' && (cursor == *start || cursor[-1] != '\\')) {
+      quoted = !quoted;
+    } else if (!quoted && *cursor == '{') {
+      depth++;
+    } else if (!quoted && *cursor == '}') {
+      depth--;
+      if (depth == 0) {
+        *end = cursor + 1;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 static int path_matches(const char *path, const char *base) {
   size_t base_len = strlen(base);
   return strncmp(path, base, base_len) == 0 && (path[base_len] == '\0' || path[base_len] == '?');
+}
+
+static int is_local_demo_origin(const HttpRequest *request) {
+  return strcmp(request->origin, "http://localhost:5173") == 0 ||
+         strcmp(request->origin, "http://127.0.0.1:5173") == 0 ||
+         strcmp(request->origin, "http://[::1]:5173") == 0;
 }
 
 static int get_query_param(const char *path, const char *key, char *output, size_t size) {
@@ -560,6 +772,25 @@ static int recv_request(SOCKET client, HttpRequest *request) {
     }
   }
 
+  {
+    char *origin = strstr(buffer, "Origin:");
+    if (origin) {
+      char *line_end = strstr(origin, "\r\n");
+      origin += 7;
+      while (*origin == ' ') {
+        origin++;
+      }
+      if (line_end) {
+        size_t len = (size_t) (line_end - origin);
+        if (len >= sizeof(request->origin)) {
+          len = sizeof(request->origin) - 1;
+        }
+        memcpy(request->origin, origin, len);
+        request->origin[len] = '\0';
+      }
+    }
+  }
+
   headers_end = strstr(buffer, "\r\n\r\n");
   if (headers_end && content_length > 0) {
     size_t body_len = (size_t) content_length;
@@ -643,6 +874,12 @@ static void send_auth_payload(sqlite3 *db, SOCKET client, int user_id) {
 }
 
 static void ensure_schema(sqlite3 *db) {
+  int had_worklog_legacy = 0;
+  int had_deliverable_legacy = 0;
+  int had_project_legacy = 0;
+  int had_approval_legacy = 0;
+  int had_audit_legacy = 0;
+  int had_evidence_legacy = 0;
   const char *schema =
     "CREATE TABLE IF NOT EXISTS users ("
     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -677,6 +914,12 @@ static void ensure_schema(sqlite3 *db) {
     "status TEXT DEFAULT 'active', "
     "developer_id INTEGER NOT NULL, "
     "client_id INTEGER NOT NULL, "
+    "chain_status TEXT NOT NULL DEFAULT 'legacy', "
+    "chain_id TEXT DEFAULT '', "
+    "tx_hash TEXT DEFAULT '', "
+    "legacy_tx_hash TEXT DEFAULT '', "
+    "candidate_tx_hash TEXT DEFAULT '', "
+    "block_number INTEGER DEFAULT 0, "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
     "CREATE TABLE IF NOT EXISTS project_members ("
@@ -696,6 +939,14 @@ static void ensure_schema(sqlite3 *db) {
     "digest TEXT NOT NULL, "
     "evidence_status TEXT DEFAULT 'pending', "
     "tx_hash TEXT DEFAULT '', "
+    "legacy_tx_hash TEXT DEFAULT '', "
+    "legacy_status TEXT DEFAULT '', "
+    "legacy_confirmation_comment TEXT DEFAULT '', "
+    "candidate_tx_hash TEXT DEFAULT '', "
+    "confirmation_candidate_tx_hash TEXT DEFAULT '', "
+    "confirmation_chain_id TEXT DEFAULT '', "
+    "chain_id TEXT DEFAULT '', "
+    "block_number INTEGER DEFAULT 0, "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
     "CREATE TABLE IF NOT EXISTS deliverables ("
@@ -709,6 +960,11 @@ static void ensure_schema(sqlite3 *db) {
     "file_hash TEXT NOT NULL, "
     "status TEXT DEFAULT 'uploaded', "
     "tx_hash TEXT DEFAULT '', "
+    "legacy_tx_hash TEXT DEFAULT '', "
+    "candidate_tx_hash TEXT DEFAULT '', "
+    "chain_id TEXT DEFAULT '', "
+    "evidence_origin TEXT DEFAULT 'live', "
+    "block_number INTEGER DEFAULT 0, "
     "confirmation_comment TEXT DEFAULT '', "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
@@ -721,6 +977,11 @@ static void ensure_schema(sqlite3 *db) {
     "status TEXT NOT NULL, "
     "comment TEXT DEFAULT '', "
     "actor_id INTEGER DEFAULT 0, "
+    "chain_id TEXT DEFAULT '', "
+    "legacy_tx_hash TEXT DEFAULT '', "
+    "record_origin TEXT DEFAULT 'live', "
+    "source_created_at TEXT DEFAULT '', "
+    "anchored_at TEXT DEFAULT '', "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
     "CREATE TABLE IF NOT EXISTS approval_records ("
@@ -730,6 +991,10 @@ static void ensure_schema(sqlite3 *db) {
     "approved INTEGER NOT NULL, "
     "comment TEXT DEFAULT '', "
     "tx_hash TEXT DEFAULT '', "
+    "legacy_tx_hash TEXT DEFAULT '', "
+    "candidate_tx_hash TEXT DEFAULT '', "
+    "chain_id TEXT DEFAULT '', "
+    "block_number INTEGER DEFAULT 0, "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
     "CREATE TABLE IF NOT EXISTS project_audits ("
@@ -739,7 +1004,13 @@ static void ensure_schema(sqlite3 *db) {
     "audit_type TEXT NOT NULL, "
     "decision TEXT NOT NULL, "
     "comment TEXT DEFAULT '', "
+    "digest TEXT DEFAULT '', "
+    "candidate_tx_hash TEXT DEFAULT '', "
+    "legacy_tx_hash TEXT DEFAULT '', "
     "tx_hash TEXT DEFAULT '', "
+    "chain_id TEXT DEFAULT '', "
+    "block_number INTEGER DEFAULT 0, "
+    "status TEXT DEFAULT 'pending', "
     "actor_id INTEGER DEFAULT 0, "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
@@ -752,9 +1023,60 @@ static void ensure_schema(sqlite3 *db) {
     "detail TEXT DEFAULT '', "
     "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
     ");"
+    "CREATE TABLE IF NOT EXISTS chain_migrations ("
+    "project_id INTEGER PRIMARY KEY, "
+    "checkpoint_hash TEXT NOT NULL, "
+    "batch_count INTEGER NOT NULL, "
+    "source_created_at TEXT NOT NULL, "
+    "current_stage INTEGER NOT NULL, "
+    "passed_stage_count INTEGER NOT NULL, "
+    "current_stage_worklog_count INTEGER NOT NULL DEFAULT 0, "
+    "current_stage_deliverable_count INTEGER NOT NULL DEFAULT 0, "
+    "total_worklog_count INTEGER NOT NULL DEFAULT 0, "
+    "total_deliverable_count INTEGER NOT NULL DEFAULT 0, "
+    "total_confirmation_count INTEGER NOT NULL DEFAULT 0, "
+    "total_stage_audit_count INTEGER NOT NULL DEFAULT 0, "
+    "total_final_audit_count INTEGER NOT NULL DEFAULT 0, "
+    "latest_deliverable_id INTEGER NOT NULL DEFAULT 0, "
+    "current_stage_client_approved INTEGER NOT NULL DEFAULT 0, "
+    "finalized INTEGER NOT NULL DEFAULT 0, "
+    "final_approved INTEGER NOT NULL DEFAULT 0, "
+    "checkpoint_candidate_tx_hash TEXT DEFAULT '', "
+    "checkpoint_tx_hash TEXT DEFAULT '', "
+    "checkpoint_chain_id TEXT DEFAULT '', "
+    "checkpoint_block_number INTEGER DEFAULT 0, "
+    "status TEXT NOT NULL DEFAULT 'pending', "
+    "source_fingerprint TEXT NOT NULL DEFAULT '', "
+    "created_at TEXT DEFAULT CURRENT_TIMESTAMP, "
+    "anchored_at TEXT DEFAULT ''"
+    ");"
+    "CREATE TABLE IF NOT EXISTS chain_migration_batches ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "project_id INTEGER NOT NULL, "
+    "batch_no INTEGER NOT NULL, "
+    "category TEXT NOT NULL, "
+    "category_id INTEGER NOT NULL, "
+    "digest TEXT NOT NULL, "
+    "record_count INTEGER NOT NULL, "
+    "source_from INTEGER NOT NULL, "
+    "source_to INTEGER NOT NULL, "
+    "candidate_tx_hash TEXT DEFAULT '', "
+    "tx_hash TEXT DEFAULT '', "
+    "chain_id TEXT DEFAULT '', "
+    "block_number INTEGER DEFAULT 0, "
+    "status TEXT NOT NULL DEFAULT 'pending', "
+    "anchored_at TEXT DEFAULT '', "
+    "UNIQUE(project_id, batch_no)"
+    ");"
     ";";
 
   exec_sql(db, schema);
+  had_worklog_legacy = table_has_column(db, "worklogs", "legacy_tx_hash");
+  had_deliverable_legacy = table_has_column(db, "deliverables", "legacy_tx_hash");
+  had_project_legacy = table_has_column(db, "projects", "legacy_tx_hash");
+  had_approval_legacy = table_has_column(db, "approval_records", "legacy_tx_hash");
+  had_audit_legacy = table_has_column(db, "project_audits", "legacy_tx_hash");
+  had_evidence_legacy = table_has_column(db, "evidence_records", "legacy_tx_hash");
   exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''");
   exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''");
   exec_sql_ignore(db, "ALTER TABLE users ADD COLUMN company TEXT DEFAULT ''");
@@ -768,6 +1090,60 @@ static void ensure_schema(sqlite3 *db) {
   exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN stage_no INTEGER NOT NULL DEFAULT 1");
   exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN confirmation_comment TEXT DEFAULT ''");
   exec_sql_ignore(db, "ALTER TABLE evidence_records ADD COLUMN actor_id INTEGER DEFAULT 0");
+  exec_sql_ignore(db, "ALTER TABLE projects ADD COLUMN chain_status TEXT NOT NULL DEFAULT 'legacy'");
+  exec_sql_ignore(db, "ALTER TABLE projects ADD COLUMN chain_id TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE projects ADD COLUMN tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE projects ADD COLUMN legacy_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE projects ADD COLUMN candidate_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE projects ADD COLUMN block_number INTEGER DEFAULT 0");
+  exec_sql_ignore(db, "ALTER TABLE worklogs ADD COLUMN legacy_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE worklogs ADD COLUMN candidate_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE worklogs ADD COLUMN chain_id TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE worklogs ADD COLUMN block_number INTEGER DEFAULT 0");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN legacy_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN legacy_status TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN legacy_confirmation_comment TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN candidate_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN confirmation_candidate_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN confirmation_chain_id TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN chain_id TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN evidence_origin TEXT DEFAULT 'live'");
+  exec_sql_ignore(db, "ALTER TABLE deliverables ADD COLUMN block_number INTEGER DEFAULT 0");
+  exec_sql_ignore(db, "ALTER TABLE evidence_records ADD COLUMN chain_id TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE evidence_records ADD COLUMN legacy_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE evidence_records ADD COLUMN record_origin TEXT DEFAULT 'live'");
+  exec_sql_ignore(db, "ALTER TABLE evidence_records ADD COLUMN source_created_at TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE evidence_records ADD COLUMN anchored_at TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE approval_records ADD COLUMN legacy_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE approval_records ADD COLUMN candidate_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE approval_records ADD COLUMN chain_id TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE approval_records ADD COLUMN block_number INTEGER DEFAULT 0");
+  exec_sql_ignore(db, "ALTER TABLE project_audits ADD COLUMN digest TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE project_audits ADD COLUMN candidate_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE project_audits ADD COLUMN legacy_tx_hash TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE project_audits ADD COLUMN chain_id TEXT DEFAULT ''");
+  exec_sql_ignore(db, "ALTER TABLE project_audits ADD COLUMN block_number INTEGER DEFAULT 0");
+  exec_sql_ignore(db, "ALTER TABLE project_audits ADD COLUMN status TEXT DEFAULT 'pending'");
+
+  if (!had_worklog_legacy) {
+    exec_sql(db, "UPDATE worklogs SET legacy_tx_hash = tx_hash, tx_hash = '', evidence_status = 'legacy' WHERE tx_hash <> ''");
+  }
+  if (!had_project_legacy) {
+    exec_sql(db, "UPDATE projects SET legacy_tx_hash = tx_hash, tx_hash = '', chain_status = 'legacy' WHERE tx_hash <> ''");
+  }
+  if (!had_deliverable_legacy) {
+    exec_sql(db, "UPDATE deliverables SET legacy_tx_hash = tx_hash, legacy_status = status, legacy_confirmation_comment = confirmation_comment, tx_hash = '', status = 'uploaded', confirmation_comment = '' WHERE tx_hash <> ''");
+  }
+  if (!had_approval_legacy) {
+    exec_sql(db, "UPDATE approval_records SET legacy_tx_hash = tx_hash, tx_hash = '' WHERE tx_hash <> ''");
+  }
+  if (!had_audit_legacy) {
+    exec_sql(db, "UPDATE project_audits SET legacy_tx_hash = tx_hash, tx_hash = '', status = 'legacy' WHERE tx_hash <> ''");
+  }
+  if (!had_evidence_legacy) {
+    exec_sql(db, "UPDATE evidence_records SET legacy_tx_hash = tx_hash, tx_hash = '', status = 'legacy' WHERE tx_hash <> ''");
+  }
+  exec_sql_ignore(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_tx_hash ON evidence_records(tx_hash) WHERE tx_hash <> ''");
 }
 
 static int insert_user_account(sqlite3 *db, const char *username, const char *name, const char *role, const char *password, const char *email, const char *phone, const char *company, const char *bio, const char *wallet, const char *status, const char *salt_prefix) {
@@ -815,7 +1191,7 @@ static void insert_wallet_binding(sqlite3 *db, int user_id, const char *wallet, 
 static int insert_project(sqlite3 *db, const char *name, const char *description, const char *status, int developer_id, int client_id) {
   sqlite3_stmt *stmt = NULL;
 
-  if (sqlite3_prepare_v2(db, "INSERT INTO projects(name, description, status, developer_id, client_id) VALUES (?, ?, ?, ?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "INSERT INTO projects(name, description, status, developer_id, client_id, chain_status) VALUES (?, ?, ?, ?, ?, 'pending')", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, description, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, status, -1, SQLITE_TRANSIENT);
@@ -845,6 +1221,12 @@ static void build_worklog_digest(int project_id, int user_id, int stage_no, cons
   char canonical[1024];
 
   snprintf(canonical, sizeof(canonical), "{\"projectId\":%d,\"userId\":%d,\"stageNo\":%d,\"workDate\":\"%s\",\"hours\":%.2f,\"taskDescription\":\"%s\"}", project_id, user_id, stage_no, work_date, hours, task_description);
+  sha256_hex(canonical, output);
+}
+
+static void build_project_digest(int project_id, int developer_id, int client_id, const char *developer_wallet, const char *client_wallet, const char *name, const char *description, char output[65]) {
+  char canonical[2048];
+  snprintf(canonical, sizeof(canonical), "project=%d|developer=%d:%s|client=%d:%s|name=%s|description=%s", project_id, developer_id, developer_wallet, client_id, client_wallet, name, description);
   sha256_hex(canonical, output);
 }
 
@@ -891,48 +1273,1092 @@ static int insert_deliverable(sqlite3 *db, int project_id, int user_id, int stag
   return (int) sqlite3_last_insert_rowid(db);
 }
 
-static void insert_evidence(sqlite3 *db, const char *business_type, int business_id, const char *tx_hash, int block_number, const char *status, const char *comment, int actor_id) {
+static void insert_evidence(sqlite3 *db, const char *business_type, int business_id, const char *tx_hash, long long block_number, const char *status, const char *comment, int actor_id, const char *chain_id, const char *origin, const char *source_created_at) {
   sqlite3_stmt *stmt = NULL;
 
-  if (sqlite3_prepare_v2(db, "INSERT INTO evidence_records(business_type, business_id, tx_hash, block_number, status, comment, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "INSERT INTO evidence_records(business_type, business_id, tx_hash, block_number, status, comment, actor_id, chain_id, record_origin, source_created_at, anchored_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_text(stmt, 1, business_type, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 2, business_id);
     sqlite3_bind_text(stmt, 3, tx_hash, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, block_number);
+    sqlite3_bind_int64(stmt, 4, block_number);
     sqlite3_bind_text(stmt, 5, status, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 6, comment, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 7, actor_id);
+    sqlite3_bind_text(stmt, 8, chain_id ? chain_id : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, origin ? origin : "live", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, source_created_at ? source_created_at : "", -1, SQLITE_TRANSIENT);
     sqlite3_step(stmt);
   }
 
   sqlite3_finalize(stmt);
 }
 
-static void insert_approval(sqlite3 *db, int deliverable_id, int client_id, int approved, const char *comment, const char *tx_hash) {
+typedef struct {
+  char chain_id[16];
+  char name[32];
+  char rpc_url[2048];
+  char contract_address[128];
+  int confirmations;
+} ChainNetwork;
+
+typedef struct {
+  int project_id;
+  int business_id;
+  int batch_no;
+  int stage_no;
+  int type_id;
+  int decision;
+  int category_id;
+  int record_count;
+  int batch_count;
+  int current_stage;
+  int passed_stage_count;
+  int finalized;
+  int final_approved;
+  int current_stage_worklog_count;
+  int current_stage_deliverable_count;
+  int latest_deliverable_id;
+  int latest_deliverable_stage;
+  int current_stage_client_approved;
+  int total_worklog_count;
+  int total_deliverable_count;
+  int total_approval_count;
+  int total_stage_audit_count;
+  int total_final_audit_count;
+  long long source_created_at;
+  long long source_from;
+  long long source_to;
+  char digest[65];
+  char expected_wallet[128];
+  char developer_wallet[128];
+  char client_wallet[128];
+  char comment[512];
+  char category[32];
+  char batch_category[32];
+  char source_time[64];
+} ChainProofExpectation;
+
+static int get_chain_network(const char *chain_id, ChainNetwork *network) {
+  const char *rpc_url = NULL;
+  const char *contract = NULL;
+  memset(network, 0, sizeof(*network));
+  snprintf(network->chain_id, sizeof(network->chain_id), "%s", chain_id ? chain_id : "");
+  if (strcmp(network->chain_id, "31337") == 0) {
+    snprintf(network->name, sizeof(network->name), "Hardhat");
+    rpc_url = getenv("TRUST_WORK_RPC_31337");
+    contract = getenv("TRUST_WORK_CONTRACT_31337");
+    network->confirmations = 1;
+  } else if (strcmp(network->chain_id, "11155111") == 0) {
+    snprintf(network->name, sizeof(network->name), "Sepolia");
+    rpc_url = getenv("TRUST_WORK_RPC_11155111");
+    contract = getenv("TRUST_WORK_CONTRACT_11155111");
+    network->confirmations = 2;
+  } else {
+    return 0;
+  }
+  if (!rpc_url || !contract || !rpc_url[0] || !contract[0] || strlen(rpc_url) >= sizeof(network->rpc_url) || strlen(contract) >= sizeof(network->contract_address)) {
+    return 0;
+  }
+  snprintf(network->rpc_url, sizeof(network->rpc_url), "%s", rpc_url);
+  snprintf(network->contract_address, sizeof(network->contract_address), "%s", contract);
+  return 1;
+}
+
+static int chain_rpc_call(const ChainNetwork *network, const char *method, const char *params, char *response, size_t response_size) {
+  char body[4096];
+  snprintf(body, sizeof(body), "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}", method, params);
+  if (!chain_rpc_post(network->rpc_url, body, response, response_size)) {
+    return 0;
+  }
+  return strstr(response, "\"error\"") == NULL;
+}
+
+static int extract_hex_word(const char *data, int word_index, char output[67]) {
+  const char *hex = data;
+  size_t length;
+  if (!hex) {
+    return 0;
+  }
+  if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) {
+    hex += 2;
+  }
+  length = strlen(hex);
+  if (word_index < 0 || length < (size_t) (word_index + 1) * 64) {
+    return 0;
+  }
+  output[0] = '0';
+  output[1] = 'x';
+  memcpy(output + 2, hex + (size_t) word_index * 64, 64);
+  output[66] = '\0';
+  lower_copy(output, output, 67);
+  return 1;
+}
+
+static int event_log_matches(
+  const char *receipt_start,
+  const char *receipt_end,
+  const char *contract_address,
+  const char *topic0,
+  const char **expected_topics,
+  int topic_count,
+  const char **expected_data,
+  int data_count
+) {
+  const char *logs_key = strstr(receipt_start, "\"logs\"");
+  const char *array_start = NULL;
+  const char *array_end = NULL;
+  const char *cursor;
+  char expected_address[128];
+  lower_copy(contract_address, expected_address, sizeof(expected_address));
+  if (!logs_key || logs_key >= receipt_end || !(array_start = strchr(logs_key, '[')) || array_start >= receipt_end || !(array_end = json_matching_bracket(array_start, receipt_end)) || array_end >= receipt_end) {
+    return 0;
+  }
+  cursor = array_start + 1;
+  while (cursor < array_end) {
+    const char *object_start = strchr(cursor, '{');
+    const char *object_end;
+    char address[128], data[4096], topics[8][67];
+    int found_topics = 0;
+    int matches = 1;
+    const char *topics_key;
+    const char *topics_start;
+    const char *topics_end;
+    const char *item;
+    int i;
+    if (!object_start || object_start >= array_end) {
+      break;
+    }
+    object_end = strchr(object_start, '}');
+    if (!object_end || object_end > array_end) {
+      break;
+    }
+    if (!json_get_string_range(object_start, object_end + 1, "address", address, sizeof(address)) ||
+        !json_get_string_range(object_start, object_end + 1, "data", data, sizeof(data))) {
+      cursor = object_end + 1;
+      continue;
+    }
+    lower_copy(address, address, sizeof(address));
+    if (strcmp(address, expected_address) != 0) {
+      cursor = object_end + 1;
+      continue;
+    }
+    topics_key = strstr(object_start, "\"topics\"");
+    topics_start = topics_key ? strchr(topics_key, '[') : NULL;
+    topics_end = topics_start ? strchr(topics_start, ']') : NULL;
+    if (!topics_start || !topics_end || topics_end > object_end) {
+      cursor = object_end + 1;
+      continue;
+    }
+    item = topics_start;
+    while (item < topics_end && found_topics < 8) {
+      const char *quote = strchr(item, '\"');
+      const char *close;
+      size_t len;
+      if (!quote || quote >= topics_end) {
+        break;
+      }
+      close = strchr(quote + 1, '\"');
+      if (!close || close >= topics_end) {
+        break;
+      }
+      len = (size_t) (close - quote - 1);
+      if (len >= sizeof(topics[0])) {
+        break;
+      }
+      memcpy(topics[found_topics], quote + 1, len);
+      topics[found_topics][len] = '\0';
+      lower_copy(topics[found_topics], topics[found_topics], sizeof(topics[0]));
+      found_topics++;
+      item = close + 1;
+    }
+    if (found_topics != topic_count || _stricmp(topics[0], topic0) != 0) {
+      cursor = object_end + 1;
+      continue;
+    }
+    for (i = 0; i < topic_count; i++) {
+      char expected[67];
+      lower_copy(expected_topics[i], expected, sizeof(expected));
+      if (strcmp(topics[i], expected) != 0) {
+        matches = 0;
+        break;
+      }
+    }
+    for (i = 0; matches && i < data_count; i++) {
+      char actual[67];
+      char expected[67];
+      if (!expected_data[i]) {
+        continue;
+      }
+      if (!extract_hex_word(data, i, actual)) {
+        matches = 0;
+        break;
+      }
+      lower_copy(expected_data[i], expected, sizeof(expected));
+      if (strcmp(actual, expected) != 0) {
+        matches = 0;
+      }
+    }
+    if (matches) {
+      return 1;
+    }
+    cursor = object_end + 1;
+  }
+  return 0;
+}
+
+static int rpc_hex_value(const char *hex, long long *value);
+
+static int verify_chain_event(const ChainNetwork *network, const ChainProofExpectation *proof, const char *receipt_start, const char *receipt_end) {
+  static const char *project_topic = "0xedf4f93fa0bb24c25c3dd62e9fca9f51f5797a206900efe6a6f9f0e6d7e3b7bd";
+  static const char *evidence_topic = "0xa8eab4a08a11b794f0e58ee4a6f36575a5a2ed4c5b67a357a66f6fcd51d8074a";
+  static const char *checkpoint_topic = "0x466637fc63b7c13f7e930860002fe61e48b3b06ffd102435d86514efabe905bf";
+  static const char *batch_topic = "0xcd0580bd145988ad828ec2f1b614c9e1655b867c892bbbb3b894cdef88b4e71f";
+  char project_word[67], business_word[67], dev_word[67], client_word[67], wallet_word[67];
+  char digest_word[67], type_word[67], stage_word[67], decision_word[67], count_word[67], from_word[67], to_word[67];
+  const char *topics[4];
+  const char *data_words[18];
+  hex_uint_word((unsigned long long) proof->project_id, project_word);
+  if (strcmp(proof->category, "project") == 0) {
+    char submitter_word[67];
+    const char *project_data[2];
+    hex_address_word(proof->developer_wallet, dev_word);
+    hex_address_word(proof->client_wallet, client_word);
+    hex_bytes32_word(proof->digest, digest_word);
+    hex_address_word(proof->expected_wallet, submitter_word);
+    topics[0] = project_topic;
+    topics[1] = project_word;
+    topics[2] = dev_word;
+    topics[3] = client_word;
+    project_data[0] = digest_word;
+    project_data[1] = submitter_word;
+    return event_log_matches(receipt_start, receipt_end, network->contract_address, project_topic, topics, 4, project_data, 2);
+  }
+  if (strcmp(proof->category, "migration_checkpoint") == 0) {
+    char submitter_word[67];
+    char words[16][67];
+    hex_uint_word((unsigned long long) proof->batch_count, words[0]);
+    hex_uint_word((unsigned long long) proof->source_created_at, words[1]);
+    hex_uint_word((unsigned long long) proof->current_stage, words[2]);
+    hex_uint_word((unsigned long long) proof->passed_stage_count, words[3]);
+    hex_uint_word((unsigned long long) proof->current_stage_worklog_count, words[4]);
+    hex_uint_word((unsigned long long) proof->current_stage_deliverable_count, words[5]);
+    hex_uint_word((unsigned long long) proof->total_worklog_count, words[6]);
+    hex_uint_word((unsigned long long) proof->total_deliverable_count, words[7]);
+    hex_uint_word((unsigned long long) proof->total_approval_count, words[8]);
+    hex_uint_word((unsigned long long) proof->total_stage_audit_count, words[9]);
+    hex_uint_word((unsigned long long) proof->total_final_audit_count, words[10]);
+    hex_uint_word((unsigned long long) proof->latest_deliverable_id, words[11]);
+    hex_uint_word((unsigned long long) proof->latest_deliverable_stage, words[12]);
+    hex_uint_word((unsigned long long) proof->current_stage_client_approved, words[13]);
+    hex_uint_word((unsigned long long) proof->finalized, words[14]);
+    hex_uint_word((unsigned long long) proof->final_approved, words[15]);
+    hex_bytes32_word(proof->digest, digest_word);
+    hex_address_word(proof->expected_wallet, submitter_word);
+    topics[0] = checkpoint_topic;
+    topics[1] = project_word;
+    data_words[0] = digest_word;
+    for (int i = 0; i < 16; i++) {
+      data_words[i + 1] = words[i];
+    }
+    data_words[17] = submitter_word;
+    return event_log_matches(receipt_start, receipt_end, network->contract_address, checkpoint_topic, topics, 2, data_words, 18);
+  }
+  if (strcmp(proof->category, "migration_batch") == 0) {
+    char submitter_word[67];
+    hex_uint_word((unsigned long long) proof->batch_no, business_word);
+    hex_uint_word((unsigned long long) proof->category_id, type_word);
+    hex_uint_word((unsigned long long) proof->record_count, count_word);
+    hex_uint_word((unsigned long long) proof->source_from, from_word);
+    hex_uint_word((unsigned long long) proof->source_to, to_word);
+    hex_bytes32_word(proof->digest, digest_word);
+    hex_address_word(proof->expected_wallet, submitter_word);
+    topics[0] = batch_topic;
+    topics[1] = project_word;
+    topics[2] = business_word;
+    data_words[0] = type_word;
+    data_words[1] = digest_word;
+    data_words[2] = count_word;
+    data_words[3] = from_word;
+    data_words[4] = to_word;
+    data_words[5] = submitter_word;
+    return event_log_matches(receipt_start, receipt_end, network->contract_address, batch_topic, topics, 3, data_words, 6);
+  }
+
+  hex_uint_word((unsigned long long) proof->type_id, type_word);
+  hex_uint_word((unsigned long long) proof->business_id, business_word);
+  hex_uint_word((unsigned long long) proof->stage_no, stage_word);
+  hex_uint_word((unsigned long long) proof->decision, decision_word);
+  hex_bytes32_word(proof->digest, digest_word);
+  hex_address_word(proof->expected_wallet, wallet_word);
+  topics[0] = evidence_topic;
+  topics[1] = type_word;
+  topics[2] = project_word;
+  topics[3] = business_word;
+  data_words[0] = stage_word;
+  data_words[1] = digest_word;
+  data_words[2] = strcmp(proof->category, "deliverable_confirmation") == 0 && proof->decision == 0 ? NULL : decision_word;
+  data_words[3] = wallet_word;
+  return event_log_matches(receipt_start, receipt_end, network->contract_address, evidence_topic, topics, 4, data_words, 4);
+}
+
+static int read_confirmation_decision(const ChainNetwork *network, const ChainProofExpectation *proof, const char *receipt_start, const char *receipt_end, int *decision) {
+  static const char *evidence_topic = "0xa8eab4a08a11b794f0e58ee4a6f36575a5a2ed4c5b67a357a66f6fcd51d8074a";
+  const char *logs_key = strstr(receipt_start, "\"logs\"");
+  const char *array_start = logs_key ? strchr(logs_key, '[') : NULL;
+  const char *array_end = array_start ? json_matching_bracket(array_start, receipt_end) : NULL;
+  const char *cursor;
+  char expected_address[128], project_word[67], business_word[67], type_word[67];
+  lower_copy(network->contract_address, expected_address, sizeof(expected_address));
+  hex_uint_word((unsigned long long) proof->project_id, project_word);
+  hex_uint_word((unsigned long long) proof->business_id, business_word);
+  hex_uint_word(3, type_word);
+  if (!array_start || !array_end || array_end > receipt_end) {
+    return 0;
+  }
+  cursor = array_start + 1;
+  while (cursor < array_end) {
+    const char *object_start = strchr(cursor, '{');
+    const char *object_end;
+    char address[128], data[4096], topics[4][67];
+    const char *topics_key, *topics_start, *topics_end, *item;
+    int found_topics = 0;
+    if (!object_start || object_start >= array_end) {
+      break;
+    }
+    object_end = strchr(object_start, '}');
+    if (!object_end || object_end > array_end) {
+      break;
+    }
+    if (json_get_string_range(object_start, object_end + 1, "address", address, sizeof(address)) &&
+        json_get_string_range(object_start, object_end + 1, "data", data, sizeof(data))) {
+      lower_copy(address, address, sizeof(address));
+      topics_key = strstr(object_start, "\"topics\"");
+      topics_start = topics_key ? strchr(topics_key, '[') : NULL;
+      topics_end = topics_start ? strchr(topics_start, ']') : NULL;
+      item = topics_start;
+      while (item && topics_end && item < topics_end && found_topics < 4) {
+        const char *quote = strchr(item, '\"');
+        const char *close;
+        size_t length;
+        if (!quote || quote >= topics_end) {
+          break;
+        }
+        close = strchr(quote + 1, '\"');
+        if (!close || close >= topics_end) {
+          break;
+        }
+        length = (size_t) (close - quote - 1);
+        if (length >= sizeof(topics[0])) {
+          break;
+        }
+        memcpy(topics[found_topics], quote + 1, length);
+        topics[found_topics][length] = '\0';
+        lower_copy(topics[found_topics], topics[found_topics], sizeof(topics[0]));
+        found_topics++;
+        item = close + 1;
+      }
+      if (strcmp(address, expected_address) == 0 && found_topics == 4 &&
+          strcmp(topics[0], evidence_topic) == 0 && strcmp(topics[1], type_word) == 0 &&
+          strcmp(topics[2], project_word) == 0 && strcmp(topics[3], business_word) == 0) {
+        char decision_word[67];
+        long long parsed;
+        if (!extract_hex_word(data, 2, decision_word) || !rpc_hex_value(decision_word, &parsed) || (parsed != 1 && parsed != 2)) {
+          return 0;
+        }
+        *decision = (int) parsed;
+        return 1;
+      }
+    }
+    cursor = object_end + 1;
+  }
+  return 0;
+}
+
+static int rpc_hex_value(const char *hex, long long *value) {
+  char *end = NULL;
+  unsigned long long parsed;
+  if (!hex || !value || hex[0] != '0' || (hex[1] != 'x' && hex[1] != 'X')) {
+    return 0;
+  }
+  parsed = strtoull(hex + 2, &end, 16);
+  if (end == hex + 2) {
+    return 0;
+  }
+  *value = (long long) parsed;
+  return 1;
+}
+
+static int rpc_get_hex_value(const ChainNetwork *network, const char *method, const char *params, long long *value) {
+  char response[65536];
+  char hex[128];
+  if (!chain_rpc_call(network, method, params, response, sizeof(response)) ||
+      !json_get_string(response, "result", hex, sizeof(hex))) {
+    return 0;
+  }
+  return rpc_hex_value(hex, value);
+}
+
+static void handle_chain_config(SOCKET client) {
+  char body[2048];
+  size_t off = 0;
+  const char *ids[2] = { "31337", "11155111" };
+  int i, first = 1;
+  append_format(body, sizeof(body), &off, "{\"networks\":[");
+  for (i = 0; i < 2; i++) {
+    ChainNetwork network;
+    char address[256];
+    if (!get_chain_network(ids[i], &network)) {
+      continue;
+    }
+    json_escape(network.contract_address, address, sizeof(address));
+    append_format(
+      body,
+      sizeof(body),
+      &off,
+      "%s{\"chainId\":%s,\"name\":\"%s\",\"contractAddress\":\"%s\",\"confirmations\":%d}",
+      first ? "" : ",",
+      network.chain_id,
+      network.name,
+      address,
+      network.confirmations
+    );
+    first = 0;
+  }
+  append_format(body, sizeof(body), &off, "]}");
+  send_response(client, 200, "OK", body);
+}
+
+static int get_project_wallets(sqlite3 *db, int project_id, char developer_wallet[128], char client_wallet[128], char *chain_status, size_t chain_status_size, char *project_status, size_t project_status_size, char *created_at, size_t created_at_size) {
+  sqlite3_stmt *stmt = NULL;
+  int found = 0;
+  if (sqlite3_prepare_v2(
+        db,
+        "SELECT d.wallet_address, c.wallet_address, p.chain_status, p.status, p.created_at "
+        "FROM projects p JOIN users d ON d.id = p.developer_id JOIN users c ON c.id = p.client_id WHERE p.id = ?",
+        -1,
+        &stmt,
+        NULL
+      ) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      copy_sqlite_text(stmt, 0, developer_wallet, 128);
+      copy_sqlite_text(stmt, 1, client_wallet, 128);
+      copy_sqlite_text(stmt, 2, chain_status, chain_status_size);
+      copy_sqlite_text(stmt, 3, project_status, project_status_size);
+      copy_sqlite_text(stmt, 4, created_at, created_at_size);
+      found = 1;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return found;
+}
+
+static void set_proof_type(ChainProofExpectation *proof, const char *business_type) {
+  snprintf(proof->category, sizeof(proof->category), "%s", business_type);
+  if (strcmp(business_type, "worklog") == 0) {
+    proof->type_id = 1;
+  } else if (strcmp(business_type, "deliverable") == 0) {
+    proof->type_id = 2;
+  } else if (strcmp(business_type, "deliverable_confirmation") == 0) {
+    proof->type_id = 3;
+  } else if (strcmp(business_type, "stage_audit") == 0) {
+    proof->type_id = 4;
+  } else if (strcmp(business_type, "final_audit") == 0) {
+    proof->type_id = 5;
+  }
+}
+
+static int project_is_chain_confirmed(sqlite3 *db, int project_id) {
+  sqlite3_stmt *stmt = NULL;
+  int confirmed = 0;
+  if (sqlite3_prepare_v2(db, "SELECT chain_status FROM projects WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      confirmed = strcmp(sqlite_text_or_empty(stmt, 0), "confirmed") == 0;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return confirmed;
+}
+
+static int expected_project_audit(sqlite3 *db, int audit_id, const char *audit_type, ChainProofExpectation *proof) {
+  sqlite3_stmt *stmt = NULL;
+  int found = 0;
+  if (sqlite3_prepare_v2(db, "SELECT project_id, stage_no, decision, digest, comment, status FROM project_audits WHERE id = ? AND audit_type = ?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, audit_id);
+    sqlite3_bind_text(stmt, 2, audit_type, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      proof->project_id = sqlite3_column_int(stmt, 0);
+      proof->stage_no = sqlite3_column_int(stmt, 1);
+      proof->decision = strcmp(sqlite_text_or_empty(stmt, 2), "pass") == 0 ? 1 : 2;
+      snprintf(proof->digest, sizeof(proof->digest), "%s", sqlite_text_or_empty(stmt, 3));
+      snprintf(proof->comment, sizeof(proof->comment), "%s", sqlite_text_or_empty(stmt, 4));
+      found = 1;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return found;
+}
+
+static int load_chain_proof(AppContext *app, const CurrentUser *user, const char *business_type, int business_id, const char *comment, ChainProofExpectation *proof, char *error, size_t error_size, int *http_status) {
+  sqlite3_stmt *stmt = NULL;
+  char project_status[32], chain_status[32], created_at[64];
+  memset(proof, 0, sizeof(*proof));
+  proof->business_id = business_id;
+  snprintf(proof->expected_wallet, sizeof(proof->expected_wallet), "%s", user->wallet_address);
+  snprintf(proof->comment, sizeof(proof->comment), "%s", comment ? comment : "");
+  set_proof_type(proof, business_type);
+  *http_status = 400;
+
+  if (!user->wallet_address[0]) {
+    snprintf(error, error_size, "请先在个人资料中绑定与 MetaMask 相同的钱包地址");
+    return 0;
+  }
+
+  if (strcmp(business_type, "project") == 0) {
+    char project_name[128], project_description[512];
+    int developer_id = 0, client_id = 0;
+    proof->project_id = business_id;
+    if (!is_admin(user) || !get_project_wallets(app->db, proof->project_id, proof->developer_wallet, proof->client_wallet, chain_status, sizeof(chain_status), project_status, sizeof(project_status), created_at, sizeof(created_at))) {
+      *http_status = is_admin(user) ? 404 : 403;
+      snprintf(error, error_size, is_admin(user) ? "项目不存在" : "只有管理员可提交项目创建交易");
+      return 0;
+    }
+    snprintf(proof->category, sizeof(proof->category), "project");
+    if (!proof->developer_wallet[0] || !proof->client_wallet[0]) {
+      snprintf(error, error_size, "项目开发者和客户都需要先绑定钱包");
+      return 0;
+    }
+    if (sqlite3_prepare_v2(app->db, "SELECT name, description, developer_id, client_id FROM projects WHERE id = ?", -1, &stmt, NULL) != SQLITE_OK) {
+      snprintf(error, error_size, "读取项目摘要字段失败");
+      return 0;
+    }
+    sqlite3_bind_int(stmt, 1, proof->project_id);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+      sqlite3_finalize(stmt);
+      snprintf(error, error_size, "项目摘要字段不存在");
+      return 0;
+    }
+    copy_sqlite_text(stmt, 0, project_name, sizeof(project_name));
+    copy_sqlite_text(stmt, 1, project_description, sizeof(project_description));
+    developer_id = sqlite3_column_int(stmt, 2);
+    client_id = sqlite3_column_int(stmt, 3);
+    sqlite3_finalize(stmt);
+    build_project_digest(proof->project_id, developer_id, client_id, proof->developer_wallet, proof->client_wallet, project_name, project_description, proof->digest);
+    return 1;
+  }
+
+  if (strcmp(business_type, "worklog") == 0) {
+    if (!is_developer(user) || sqlite3_prepare_v2(app->db, "SELECT project_id, stage_no, digest, user_id FROM worklogs WHERE id = ?", -1, &stmt, NULL) != SQLITE_OK) {
+      *http_status = 403;
+      snprintf(error, error_size, "只有工时所属开发者可以提交该记录");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    sqlite3_bind_int(stmt, 1, business_id);
+    if (sqlite3_step(stmt) != SQLITE_ROW || sqlite3_column_int(stmt, 3) != user->id) {
+      *http_status = 404;
+      snprintf(error, error_size, "工时记录不存在或不属于当前账号");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    proof->project_id = sqlite3_column_int(stmt, 0);
+    proof->stage_no = sqlite3_column_int(stmt, 1);
+    copy_sqlite_text(stmt, 2, proof->digest, sizeof(proof->digest));
+    sqlite3_finalize(stmt);
+    if (!project_is_chain_confirmed(app->db, proof->project_id)) {
+      *http_status = 409;
+      snprintf(error, error_size, "项目尚未完成链上创建或历史迁移，暂不能提交新工时");
+      return 0;
+    }
+  } else if (strcmp(business_type, "deliverable") == 0) {
+    if (!is_developer(user) || sqlite3_prepare_v2(app->db, "SELECT project_id, stage_no, file_hash, user_id FROM deliverables WHERE id = ?", -1, &stmt, NULL) != SQLITE_OK) {
+      *http_status = 403;
+      snprintf(error, error_size, "只有交付物所属开发者可以提交该记录");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    sqlite3_bind_int(stmt, 1, business_id);
+    if (sqlite3_step(stmt) != SQLITE_ROW || sqlite3_column_int(stmt, 3) != user->id) {
+      *http_status = 404;
+      snprintf(error, error_size, "交付物不存在或不属于当前账号");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    proof->project_id = sqlite3_column_int(stmt, 0);
+    proof->stage_no = sqlite3_column_int(stmt, 1);
+    copy_sqlite_text(stmt, 2, proof->digest, sizeof(proof->digest));
+    sqlite3_finalize(stmt);
+    if (!project_is_chain_confirmed(app->db, proof->project_id)) {
+      *http_status = 409;
+      snprintf(error, error_size, "项目尚未完成链上创建或历史迁移，暂不能提交新交付物");
+      return 0;
+    }
+  } else if (strcmp(business_type, "deliverable_confirmation") == 0) {
+    if (!is_client_role(user) || sqlite3_prepare_v2(
+          app->db,
+          "SELECT d.project_id, d.stage_no, d.file_hash, p.client_id, d.status FROM deliverables d JOIN projects p ON p.id = d.project_id WHERE d.id = ?",
+          -1,
+          &stmt,
+          NULL
+        ) != SQLITE_OK) {
+      *http_status = 403;
+      snprintf(error, error_size, "只有客户可以确认交付物");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    sqlite3_bind_int(stmt, 1, business_id);
+    if (sqlite3_step(stmt) != SQLITE_ROW || sqlite3_column_int(stmt, 3) != user->id) {
+      *http_status = 404;
+      snprintf(error, error_size, "交付物不存在或不属于当前客户");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    proof->project_id = sqlite3_column_int(stmt, 0);
+    proof->stage_no = sqlite3_column_int(stmt, 1);
+    copy_sqlite_text(stmt, 2, proof->digest, sizeof(proof->digest));
+    if (strcmp(sqlite_text_or_empty(stmt, 4), "notarized") != 0 && strcmp(sqlite_text_or_empty(stmt, 4), "rejected") != 0 && strcmp(sqlite_text_or_empty(stmt, 4), "approved") != 0) {
+      sqlite3_finalize(stmt);
+      *http_status = 409;
+      snprintf(error, error_size, "该交付物尚未完成开发者链上存证，或当前状态不能确认");
+      return 0;
+    }
+    sqlite3_finalize(stmt);
+    if (latest_deliverable_id_for_stage(app->db, proof->project_id, proof->stage_no) != business_id || !project_is_chain_confirmed(app->db, proof->project_id)) {
+      *http_status = 409;
+      snprintf(error, error_size, "只能确认当前项目阶段最新且已上链的交付物");
+      return 0;
+    }
+  } else if (strcmp(business_type, "stage_audit") == 0 || strcmp(business_type, "final_audit") == 0) {
+    const char *audit_type = strcmp(business_type, "stage_audit") == 0 ? "stage" : "final";
+    if (!is_admin(user)) {
+      *http_status = 403;
+      snprintf(error, error_size, "只有管理员可以提交审计交易");
+      return 0;
+    }
+    if (!expected_project_audit(app->db, business_id, audit_type, proof)) {
+      *http_status = 404;
+      snprintf(error, error_size, "审计申请不存在");
+      return 0;
+    }
+    if (!project_is_chain_confirmed(app->db, proof->project_id)) {
+      *http_status = 409;
+      snprintf(error, error_size, "项目尚未完成链上创建或历史迁移");
+      return 0;
+    }
+  } else if (strcmp(business_type, "migration_checkpoint") == 0) {
+    if (!is_admin(user) || sqlite3_prepare_v2(
+          app->db,
+          "SELECT checkpoint_hash, batch_count, CAST(strftime('%s', source_created_at) AS INTEGER), current_stage, passed_stage_count, finalized, final_approved, source_created_at, current_stage_worklog_count, current_stage_deliverable_count, total_worklog_count, total_deliverable_count, total_confirmation_count, total_stage_audit_count, total_final_audit_count, latest_deliverable_id, current_stage_client_approved "
+          "FROM chain_migrations WHERE project_id = ?",
+          -1,
+          &stmt,
+          NULL
+        ) != SQLITE_OK) {
+      *http_status = 403;
+      snprintf(error, error_size, "只有管理员可以迁移项目历史摘要");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    sqlite3_bind_int(stmt, 1, business_id);
+    if (sqlite3_step(stmt) != SQLITE_ROW || !get_project_wallets(app->db, business_id, proof->developer_wallet, proof->client_wallet, chain_status, sizeof(chain_status), project_status, sizeof(project_status), created_at, sizeof(created_at))) {
+      sqlite3_finalize(stmt);
+      *http_status = 404;
+      snprintf(error, error_size, "未找到可续跑的项目迁移计划");
+      return 0;
+    }
+    proof->project_id = business_id;
+    copy_sqlite_text(stmt, 0, proof->digest, sizeof(proof->digest));
+    proof->batch_count = sqlite3_column_int(stmt, 1);
+    proof->source_created_at = sqlite3_column_int64(stmt, 2);
+    proof->current_stage = sqlite3_column_int(stmt, 3);
+    proof->passed_stage_count = sqlite3_column_int(stmt, 4);
+    proof->finalized = sqlite3_column_int(stmt, 5);
+    proof->final_approved = sqlite3_column_int(stmt, 6);
+    copy_sqlite_text(stmt, 7, proof->source_time, sizeof(proof->source_time));
+    proof->current_stage_worklog_count = sqlite3_column_int(stmt, 8);
+    proof->current_stage_deliverable_count = sqlite3_column_int(stmt, 9);
+    proof->total_worklog_count = sqlite3_column_int(stmt, 10);
+    proof->total_deliverable_count = sqlite3_column_int(stmt, 11);
+    proof->total_approval_count = sqlite3_column_int(stmt, 12);
+    proof->total_stage_audit_count = sqlite3_column_int(stmt, 13);
+    proof->total_final_audit_count = sqlite3_column_int(stmt, 14);
+    proof->latest_deliverable_id = sqlite3_column_int(stmt, 15);
+    proof->latest_deliverable_stage = proof->latest_deliverable_id > 0 ? proof->current_stage : 0;
+    proof->current_stage_client_approved = sqlite3_column_int(stmt, 16);
+    snprintf(proof->category, sizeof(proof->category), "migration_checkpoint");
+    sqlite3_finalize(stmt);
+  } else if (strcmp(business_type, "migration_batch") == 0) {
+    if (!is_admin(user) || sqlite3_prepare_v2(
+          app->db,
+          "SELECT b.project_id, b.batch_no, b.category, b.category_id, b.digest, b.record_count, b.source_from, b.source_to, m.status, m.source_created_at "
+          "FROM chain_migration_batches b JOIN chain_migrations m ON m.project_id = b.project_id WHERE b.id = ?",
+          -1,
+          &stmt,
+          NULL
+        ) != SQLITE_OK) {
+      *http_status = 403;
+      snprintf(error, error_size, "只有管理员可以提交历史迁移批次");
+      sqlite3_finalize(stmt);
+      return 0;
+    }
+    sqlite3_bind_int(stmt, 1, business_id);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+      sqlite3_finalize(stmt);
+      *http_status = 404;
+      snprintf(error, error_size, "迁移批次不存在");
+      return 0;
+    }
+    proof->project_id = sqlite3_column_int(stmt, 0);
+    proof->batch_no = sqlite3_column_int(stmt, 1);
+    copy_sqlite_text(stmt, 2, proof->batch_category, sizeof(proof->batch_category));
+    proof->category_id = sqlite3_column_int(stmt, 3);
+    copy_sqlite_text(stmt, 4, proof->digest, sizeof(proof->digest));
+    proof->record_count = sqlite3_column_int(stmt, 5);
+    proof->source_from = sqlite3_column_int64(stmt, 6);
+    proof->source_to = sqlite3_column_int64(stmt, 7);
+    copy_sqlite_text(stmt, 9, proof->source_time, sizeof(proof->source_time));
+    if (strcmp(sqlite_text_or_empty(stmt, 8), "confirmed") != 0) {
+      sqlite3_finalize(stmt);
+      *http_status = 409;
+      snprintf(error, error_size, "历史迁移检查点尚未核验通过");
+      return 0;
+    }
+    sqlite3_finalize(stmt);
+    if (!get_project_wallets(app->db, proof->project_id, proof->developer_wallet, proof->client_wallet, chain_status, sizeof(chain_status), project_status, sizeof(project_status), created_at, sizeof(created_at))) {
+      *http_status = 404;
+      snprintf(error, error_size, "项目不存在");
+      return 0;
+    }
+    snprintf(proof->category, sizeof(proof->category), "migration_batch");
+  } else {
+    snprintf(error, error_size, "不支持的存证业务类型");
+    return 0;
+  }
+
+  if (strcmp(business_type, "project") != 0 && strcmp(business_type, "migration_checkpoint") != 0 && strcmp(business_type, "migration_batch") != 0 && !get_project_wallets(app->db, proof->project_id, proof->developer_wallet, proof->client_wallet, chain_status, sizeof(chain_status), project_status, sizeof(project_status), created_at, sizeof(created_at))) {
+    *http_status = 404;
+    snprintf(error, error_size, "项目不存在");
+    return 0;
+  }
+  if (strcmp(business_type, "worklog") == 0 && _stricmp(proof->expected_wallet, proof->developer_wallet) != 0) {
+    *http_status = 403;
+    snprintf(error, error_size, "当前钱包与项目开发者绑定钱包不一致");
+    return 0;
+  }
+  if (strcmp(business_type, "deliverable") == 0 && _stricmp(proof->expected_wallet, proof->developer_wallet) != 0) {
+    *http_status = 403;
+    snprintf(error, error_size, "当前钱包与项目开发者绑定钱包不一致");
+    return 0;
+  }
+  if (strcmp(business_type, "deliverable_confirmation") == 0 && _stricmp(proof->expected_wallet, proof->client_wallet) != 0) {
+    *http_status = 403;
+    snprintf(error, error_size, "当前钱包与项目客户绑定钱包不一致");
+    return 0;
+  }
+  if ((strcmp(business_type, "stage_audit") == 0 || strcmp(business_type, "final_audit") == 0 || strcmp(business_type, "migration_checkpoint") == 0 || strcmp(business_type, "migration_batch") == 0) && !is_admin(user)) {
+    *http_status = 403;
+    snprintf(error, error_size, "只有管理员可以执行该链上操作");
+    return 0;
+  }
+  return 1;
+}
+
+static int store_chain_candidate(sqlite3 *db, const char *business_type, int business_id, int project_id, const char *tx_hash, const char *chain_id) {
+  sqlite3_stmt *stmt = NULL;
+  const char *sql = NULL;
+  if (strcmp(business_type, "project") == 0) {
+    sql = "UPDATE projects SET candidate_tx_hash = ?, chain_status = 'pending' WHERE id = ? AND tx_hash = ''";
+  } else if (strcmp(business_type, "worklog") == 0) {
+    sql = "UPDATE worklogs SET candidate_tx_hash = ?, chain_id = ?, evidence_status = 'pending' WHERE id = ? AND tx_hash = ''";
+  } else if (strcmp(business_type, "deliverable") == 0) {
+    sql = "UPDATE deliverables SET candidate_tx_hash = ?, chain_id = ? WHERE id = ? AND tx_hash = ''";
+  } else if (strcmp(business_type, "deliverable_confirmation") == 0) {
+    sql = "UPDATE deliverables SET confirmation_candidate_tx_hash = ?, confirmation_chain_id = ? WHERE id = ?";
+  } else if (strcmp(business_type, "stage_audit") == 0 || strcmp(business_type, "final_audit") == 0) {
+    sql = "UPDATE project_audits SET candidate_tx_hash = ?, chain_id = ? WHERE id = ? AND tx_hash = ''";
+  } else if (strcmp(business_type, "migration_checkpoint") == 0) {
+    sql = "UPDATE chain_migrations SET checkpoint_candidate_tx_hash = ?, checkpoint_chain_id = ? WHERE project_id = ? AND checkpoint_tx_hash = ''";
+  } else if (strcmp(business_type, "migration_batch") == 0) {
+    sql = "UPDATE chain_migration_batches SET candidate_tx_hash = ?, chain_id = ? WHERE id = ? AND tx_hash = ''";
+  }
+  if (!sql || sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+    sqlite3_finalize(stmt);
+    return 0;
+  }
+  sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
+  if (strcmp(business_type, "project") == 0) {
+    sqlite3_bind_int(stmt, 2, business_id);
+  } else if (strcmp(business_type, "migration_checkpoint") == 0) {
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, business_id);
+  } else if (strcmp(business_type, "migration_batch") == 0) {
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, business_id);
+  } else {
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, business_id);
+  }
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return 1;
+}
+
+static int existing_chain_tx(sqlite3 *db, const char *business_type, int business_id, int project_id, char *tx_hash, size_t tx_hash_size, char *chain_id, size_t chain_id_size, long long *block_number) {
+  sqlite3_stmt *stmt = NULL;
+  const char *sql = NULL;
+  if (strcmp(business_type, "project") == 0) {
+    sql = "SELECT tx_hash, block_number, chain_id FROM projects WHERE id = ?";
+  } else if (strcmp(business_type, "worklog") == 0) {
+    sql = "SELECT tx_hash, block_number, chain_id FROM worklogs WHERE id = ?";
+  } else if (strcmp(business_type, "deliverable") == 0) {
+    sql = "SELECT tx_hash, block_number, chain_id FROM deliverables WHERE id = ?";
+  } else if (strcmp(business_type, "deliverable_confirmation") == 0) {
+    sql = "SELECT tx_hash, block_number, chain_id FROM approval_records WHERE deliverable_id = ? ORDER BY id DESC LIMIT 1";
+  } else if (strcmp(business_type, "stage_audit") == 0 || strcmp(business_type, "final_audit") == 0) {
+    sql = "SELECT tx_hash, block_number, chain_id FROM project_audits WHERE id = ?";
+  } else if (strcmp(business_type, "migration_checkpoint") == 0) {
+    sql = "SELECT checkpoint_tx_hash, checkpoint_block_number, checkpoint_chain_id FROM chain_migrations WHERE project_id = ?";
+  } else if (strcmp(business_type, "migration_batch") == 0) {
+    sql = "SELECT tx_hash, block_number, chain_id FROM chain_migration_batches WHERE id = ?";
+  }
+  if (!sql || sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+    sqlite3_finalize(stmt);
+    return 0;
+  }
+  sqlite3_bind_int(stmt, 1, business_id);
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    copy_sqlite_text(stmt, 0, tx_hash, tx_hash_size);
+    *block_number = sqlite3_column_int64(stmt, 1);
+    copy_sqlite_text(stmt, 2, chain_id, chain_id_size);
+  }
+  sqlite3_finalize(stmt);
+  return tx_hash[0] != '\0';
+}
+
+static void clear_chain_candidate(sqlite3 *db, const char *business_type, int business_id, const char *tx_hash) {
+  sqlite3_stmt *stmt = NULL;
+  const char *sql = NULL;
+  if (strcmp(business_type, "project") == 0) sql = "UPDATE projects SET candidate_tx_hash='', chain_status='pending' WHERE id=? AND candidate_tx_hash=?";
+  else if (strcmp(business_type, "worklog") == 0) sql = "UPDATE worklogs SET candidate_tx_hash='', chain_id='', evidence_status='pending' WHERE id=? AND candidate_tx_hash=?";
+  else if (strcmp(business_type, "deliverable") == 0) sql = "UPDATE deliverables SET candidate_tx_hash='', chain_id='' WHERE id=? AND candidate_tx_hash=?";
+  else if (strcmp(business_type, "deliverable_confirmation") == 0) sql = "UPDATE deliverables SET confirmation_candidate_tx_hash='', confirmation_chain_id='' WHERE id=? AND confirmation_candidate_tx_hash=?";
+  else if (strcmp(business_type, "stage_audit") == 0 || strcmp(business_type, "final_audit") == 0) sql = "UPDATE project_audits SET candidate_tx_hash='', chain_id='' WHERE id=? AND candidate_tx_hash=?";
+  else if (strcmp(business_type, "migration_checkpoint") == 0) sql = "UPDATE chain_migrations SET checkpoint_candidate_tx_hash='', checkpoint_chain_id='' WHERE project_id=? AND checkpoint_candidate_tx_hash=?";
+  else if (strcmp(business_type, "migration_batch") == 0) sql = "UPDATE chain_migration_batches SET candidate_tx_hash='', chain_id='' WHERE id=? AND candidate_tx_hash=?";
+  if (sql && sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, business_id);
+    sqlite3_bind_text(stmt, 2, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+  }
+  sqlite3_finalize(stmt);
+}
+
+static int existing_confirmation_tx(sqlite3 *db, int deliverable_id, const char *expected_hash, char *tx_hash, size_t tx_hash_size, char *chain_id, size_t chain_id_size, long long *block_number) {
+  sqlite3_stmt *stmt = NULL;
+  int found = 0;
+  if (sqlite3_prepare_v2(db, "SELECT tx_hash, block_number, chain_id FROM approval_records WHERE deliverable_id = ? AND tx_hash = ? ORDER BY id DESC LIMIT 1", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, deliverable_id);
+    sqlite3_bind_text(stmt, 2, expected_hash, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      copy_sqlite_text(stmt, 0, tx_hash, tx_hash_size);
+      *block_number = sqlite3_column_int64(stmt, 1);
+      copy_sqlite_text(stmt, 2, chain_id, chain_id_size);
+      found = 1;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return found;
+}
+
+static void apply_migrated_final_status(sqlite3 *db, int project_id) {
+  sqlite3_stmt *stmt = NULL;
+  const char *sql =
+    "UPDATE projects SET status = CASE "
+    "WHEN (SELECT finalized FROM chain_migrations WHERE project_id = ?) = 1 "
+    "THEN CASE WHEN (SELECT final_approved FROM chain_migrations WHERE project_id = ?) = 1 THEN 'completed' ELSE 'disputed' END "
+    "ELSE status END WHERE id = ?";
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    sqlite3_bind_int(stmt, 2, project_id);
+    sqlite3_bind_int(stmt, 3, project_id);
+    sqlite3_step(stmt);
+  }
+  sqlite3_finalize(stmt);
+}
+
+static void apply_verified_chain_tx(AppContext *app, const CurrentUser *user, const char *business_type, const ChainProofExpectation *proof, const char *tx_hash, const char *chain_id, long long block_number) {
+  sqlite3_stmt *stmt = NULL;
+  sqlite3_exec(app->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+  if (strcmp(business_type, "project") == 0) {
+    sqlite3_prepare_v2(app->db, "UPDATE projects SET chain_status = 'confirmed', chain_id = ?, tx_hash = ?, candidate_tx_hash = '', block_number = ? WHERE id = ?", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, block_number);
+    sqlite3_bind_int(stmt, 4, proof->project_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    insert_evidence(app->db, business_type, proof->project_id, tx_hash, block_number, "confirmed", "项目创建交易已核验", user->id, chain_id, "live", "");
+  } else if (strcmp(business_type, "worklog") == 0) {
+    sqlite3_prepare_v2(app->db, "UPDATE worklogs SET evidence_status = 'confirmed', tx_hash = ?, candidate_tx_hash = '', chain_id = ?, block_number = ? WHERE id = ?", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, block_number);
+    sqlite3_bind_int(stmt, 4, proof->business_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    insert_evidence(app->db, business_type, proof->business_id, tx_hash, block_number, "confirmed", proof->comment, user->id, chain_id, "live", "");
+  } else if (strcmp(business_type, "deliverable") == 0) {
+    sqlite3_prepare_v2(app->db, "UPDATE deliverables SET status = 'notarized', tx_hash = ?, candidate_tx_hash = '', chain_id = ?, block_number = ? WHERE id = ?", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, block_number);
+    sqlite3_bind_int(stmt, 4, proof->business_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    insert_evidence(app->db, business_type, proof->business_id, tx_hash, block_number, "confirmed", proof->comment, user->id, chain_id, "live", "");
+  } else if (strcmp(business_type, "deliverable_confirmation") == 0) {
+    int approved = proof->decision == 1;
+    insert_approval(app->db, proof->business_id, user->id, approved, proof->comment, tx_hash, chain_id, block_number);
+    sqlite3_prepare_v2(app->db, "UPDATE deliverables SET status = ?, confirmation_comment = ?, confirmation_candidate_tx_hash = '', confirmation_chain_id = ? WHERE id = ?", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, approved ? "approved" : "rejected", -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, proof->comment, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, proof->business_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    insert_evidence(app->db, business_type, proof->business_id, tx_hash, block_number, approved ? "confirmed" : "rejected", proof->comment, user->id, chain_id, "live", "");
+    add_audit_log(app->db, user->id, approved ? "approve_deliverable" : "reject_deliverable", "deliverable", proof->business_id, proof->comment);
+  } else if (strcmp(business_type, "stage_audit") == 0 || strcmp(business_type, "final_audit") == 0) {
+    sqlite3_prepare_v2(app->db, "UPDATE project_audits SET tx_hash = ?, candidate_tx_hash = '', chain_id = ?, block_number = ?, status = 'confirmed' WHERE id = ?", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, block_number);
+    sqlite3_bind_int(stmt, 4, proof->business_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (strcmp(business_type, "stage_audit") == 0 && proof->decision == 2) {
+      sqlite3_prepare_v2(app->db, "UPDATE deliverables SET status = 'notarized', confirmation_comment = ? WHERE id = (SELECT id FROM deliverables WHERE project_id = ? AND stage_no = ? ORDER BY id DESC LIMIT 1)", -1, &stmt, NULL);
+      sqlite3_bind_text(stmt, 1, proof->comment[0] ? proof->comment : "阶段审计驳回，请客户重新确认。", -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(stmt, 2, proof->project_id);
+      sqlite3_bind_int(stmt, 3, proof->stage_no);
+      sqlite3_step(stmt);
+      sqlite3_finalize(stmt);
+    }
+    if (strcmp(business_type, "final_audit") == 0) {
+      sqlite3_prepare_v2(app->db, "UPDATE projects SET status = ? WHERE id = ?", -1, &stmt, NULL);
+      sqlite3_bind_text(stmt, 1, proof->decision == 1 ? "completed" : "disputed", -1, SQLITE_STATIC);
+      sqlite3_bind_int(stmt, 2, proof->project_id);
+      sqlite3_step(stmt);
+      sqlite3_finalize(stmt);
+    }
+    insert_evidence(app->db, business_type, proof->business_id, tx_hash, block_number, proof->decision == 1 ? "confirmed" : "rejected", proof->comment, user->id, chain_id, "live", "");
+    add_audit_log(app->db, user->id, proof->decision == 1 ? "chain_audit_pass" : "chain_audit_reject", business_type, proof->business_id, proof->comment);
+  } else if (strcmp(business_type, "migration_checkpoint") == 0) {
+    sqlite3_prepare_v2(app->db, "UPDATE chain_migrations SET checkpoint_tx_hash = ?, checkpoint_candidate_tx_hash = '', checkpoint_chain_id = ?, checkpoint_block_number = ?, status = 'confirmed', anchored_at = CURRENT_TIMESTAMP WHERE project_id = ?", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, block_number);
+    sqlite3_bind_int(stmt, 4, proof->project_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    sqlite3_prepare_v2(app->db, "UPDATE projects SET chain_status = 'migrating' WHERE id = ?", -1, &stmt, NULL);
+    sqlite3_bind_int(stmt, 1, proof->project_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (proof->batch_count == 0) {
+      sqlite3_prepare_v2(app->db, "UPDATE chain_migrations SET status = 'completed' WHERE project_id = ?", -1, &stmt, NULL);
+      sqlite3_bind_int(stmt, 1, proof->project_id);
+      sqlite3_step(stmt);
+      sqlite3_finalize(stmt);
+      sqlite3_prepare_v2(app->db, "UPDATE projects SET chain_status = 'confirmed', chain_id = ?, tx_hash = ?, block_number = ? WHERE id = ?", -1, &stmt, NULL);
+      sqlite3_bind_text(stmt, 1, chain_id, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 2, tx_hash, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(stmt, 3, block_number);
+      sqlite3_bind_int(stmt, 4, proof->project_id);
+      sqlite3_step(stmt);
+      sqlite3_finalize(stmt);
+       apply_migrated_final_status(app->db, proof->project_id);
+    }
+    insert_evidence(app->db, "migration_checkpoint", proof->project_id, tx_hash, block_number, "confirmed", "历史摘要迁移检查点", user->id, chain_id, "migration", proof->source_time);
+  } else if (strcmp(business_type, "migration_batch") == 0) {
+    sqlite3_prepare_v2(app->db, "UPDATE chain_migration_batches SET tx_hash = ?, candidate_tx_hash = '', chain_id = ?, block_number = ?, status = 'confirmed', anchored_at = CURRENT_TIMESTAMP WHERE id = ?", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, block_number);
+    sqlite3_bind_int(stmt, 4, proof->business_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    insert_evidence(app->db, "historical_migration", proof->business_id, tx_hash, block_number, "migrated", proof->batch_category, user->id, chain_id, "migration", proof->source_time);
+    {
+      sqlite3_stmt *count_stmt = NULL;
+      int total = 0;
+      int completed = 0;
+      if (sqlite3_prepare_v2(app->db, "SELECT m.batch_count, (SELECT COUNT(*) FROM chain_migration_batches b WHERE b.project_id = m.project_id AND b.status = 'confirmed') FROM chain_migrations m WHERE m.project_id = ?", -1, &count_stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(count_stmt, 1, proof->project_id);
+        if (sqlite3_step(count_stmt) == SQLITE_ROW) {
+          total = sqlite3_column_int(count_stmt, 0);
+          completed = sqlite3_column_int(count_stmt, 1);
+        }
+      }
+      sqlite3_finalize(count_stmt);
+      if (total > 0 && total == completed) {
+        sqlite3_prepare_v2(app->db, "UPDATE chain_migrations SET status = 'completed' WHERE project_id = ?", -1, &stmt, NULL);
+        sqlite3_bind_int(stmt, 1, proof->project_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        apply_migrated_final_status(app->db, proof->project_id);
+        sqlite3_prepare_v2(app->db, "UPDATE projects SET chain_status = 'confirmed', chain_id = ?, tx_hash = (SELECT checkpoint_tx_hash FROM chain_migrations WHERE project_id = ?) WHERE id = ?", -1, &stmt, NULL);
+        sqlite3_bind_text(stmt, 1, chain_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 2, proof->project_id);
+        sqlite3_bind_int(stmt, 3, proof->project_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        sqlite3_prepare_v2(app->db, "UPDATE project_audits SET status = 'migrated' WHERE project_id = ? AND status = 'legacy'", -1, &stmt, NULL);
+        sqlite3_bind_int(stmt, 1, proof->project_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        sqlite3_prepare_v2(app->db, "UPDATE worklogs SET evidence_status = 'migrated' WHERE project_id = ? AND evidence_status = 'legacy'", -1, &stmt, NULL);
+        sqlite3_bind_int(stmt, 1, proof->project_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        sqlite3_prepare_v2(app->db, "UPDATE deliverables SET status = CASE WHEN legacy_status<>'' THEN legacy_status ELSE status END, confirmation_comment = CASE WHEN legacy_status<>'' THEN legacy_confirmation_comment ELSE confirmation_comment END, evidence_origin = 'migration', legacy_status = '', legacy_confirmation_comment = '' WHERE project_id = ?", -1, &stmt, NULL);
+        sqlite3_bind_int(stmt, 1, proof->project_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+      }
+    }
+  }
+  sqlite3_exec(app->db, "COMMIT", NULL, NULL, NULL);
+}
+
+static void insert_approval(sqlite3 *db, int deliverable_id, int client_id, int approved, const char *comment, const char *tx_hash, const char *chain_id, long long block_number) {
   sqlite3_stmt *stmt = NULL;
 
-  if (sqlite3_prepare_v2(db, "INSERT INTO approval_records(deliverable_id, client_id, approved, comment, tx_hash) VALUES (?, ?, ?, ?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "INSERT INTO approval_records(deliverable_id, client_id, approved, comment, tx_hash, chain_id, block_number) VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_int(stmt, 1, deliverable_id);
     sqlite3_bind_int(stmt, 2, client_id);
     sqlite3_bind_int(stmt, 3, approved);
     sqlite3_bind_text(stmt, 4, comment, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, tx_hash, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, chain_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 7, block_number);
     sqlite3_step(stmt);
   }
 
   sqlite3_finalize(stmt);
 }
 
-static int insert_project_audit(sqlite3 *db, int project_id, int stage_no, const char *audit_type, const char *decision, const char *comment, const char *tx_hash, int actor_id) {
+static int insert_project_audit(sqlite3 *db, int project_id, int stage_no, const char *audit_type, const char *decision, const char *comment, const char *digest, int actor_id) {
   sqlite3_stmt *stmt = NULL;
 
-  if (sqlite3_prepare_v2(db, "INSERT INTO project_audits(project_id, stage_no, audit_type, decision, comment, tx_hash, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "INSERT INTO project_audits(project_id, stage_no, audit_type, decision, comment, digest, actor_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_int(stmt, 1, project_id);
     sqlite3_bind_int(stmt, 2, stage_no);
     sqlite3_bind_text(stmt, 3, audit_type, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 4, decision, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, comment ? comment : "", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 6, tx_hash ? tx_hash : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, digest ? digest : "", -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 7, actor_id);
     sqlite3_step(stmt);
   }
@@ -1133,7 +2559,7 @@ static void load_stage_snapshot(sqlite3 *db, int project_id, int stage_no, Stage
 
   if (sqlite3_prepare_v2(
         db,
-        "SELECT COALESCE(d.status, ''), COALESCE(d.version, ''), COALESCE(d.file_name, ''), COALESCE(d.confirmation_comment, '') "
+        "SELECT COALESCE(NULLIF(d.legacy_status, ''), d.status, ''), COALESCE(d.version, ''), COALESCE(d.file_name, ''), COALESCE(NULLIF(d.legacy_confirmation_comment, ''), d.confirmation_comment, '') "
         "FROM deliverables d WHERE d.project_id = ? AND d.stage_no = ? ORDER BY d.id DESC LIMIT 1",
         -1,
         &stmt,
@@ -1153,7 +2579,7 @@ static void load_stage_snapshot(sqlite3 *db, int project_id, int stage_no, Stage
   if (sqlite3_prepare_v2(
         db,
         "SELECT COALESCE(decision, ''), COALESCE(comment, '') FROM project_audits "
-        "WHERE project_id = ? AND stage_no = ? AND audit_type = 'stage' ORDER BY id DESC LIMIT 1",
+        "WHERE project_id = ? AND stage_no = ? AND audit_type = 'stage' AND status IN ('confirmed','legacy','migrated') ORDER BY id DESC LIMIT 1",
         -1,
         &stmt,
         NULL
@@ -1181,8 +2607,6 @@ static void load_stage_snapshot(sqlite3 *db, int project_id, int stage_no, Stage
     sqlite3_bind_int(stmt, 2, stage_no);
     sqlite3_bind_int(stmt, 3, project_id);
     sqlite3_bind_int(stmt, 4, stage_no);
-    sqlite3_bind_int(stmt, 5, project_id);
-    sqlite3_bind_int(stmt, 6, stage_no);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       snapshot->evidence_count = sqlite3_column_int(stmt, 0);
     }
@@ -1226,7 +2650,7 @@ static int project_has_passed_stage(sqlite3 *db, int project_id) {
   sqlite3_stmt *stmt = NULL;
   int found = 0;
 
-  if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM project_audits WHERE project_id = ? AND audit_type = 'stage' AND decision = 'pass'", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM project_audits WHERE project_id = ? AND audit_type = 'stage' AND decision = 'pass' AND status IN ('confirmed','legacy','migrated')", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_int(stmt, 1, project_id);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       found = sqlite3_column_int(stmt, 0) > 0;
@@ -1334,7 +2758,7 @@ static int passed_stage_count(sqlite3 *db, int project_id) {
   sqlite3_stmt *stmt = NULL;
   int count = 0;
 
-  if (sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT stage_no) FROM project_audits WHERE project_id = ? AND audit_type = 'stage' AND decision = 'pass'", -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT stage_no) FROM project_audits WHERE project_id = ? AND audit_type = 'stage' AND decision = 'pass' AND status IN ('confirmed','legacy','migrated')", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_int(stmt, 1, project_id);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       count = sqlite3_column_int(stmt, 0);
@@ -1744,6 +3168,117 @@ static void handle_auth_login(AppContext *app, SOCKET client, const HttpRequest 
 
   send_auth_payload(app->db, client, sqlite3_column_int(stmt, 0));
   sqlite3_finalize(stmt);
+}
+
+static void handle_demo_accounts_get(AppContext *app, SOCKET client, const HttpRequest *request) {
+  sqlite3_stmt *stmt = NULL;
+  char body[MAX_RESPONSE_SIZE];
+  size_t off = 0;
+  int failed = 0;
+
+  if (!app->demo_quick_login_enabled) {
+    send_message(client, 404, "Not Found", "本地演示快捷登录未启用");
+    return;
+  }
+  if (!is_local_demo_origin(request)) {
+    send_message(client, 403, "Forbidden", "快捷登录只允许本机开发页面访问");
+    return;
+  }
+
+  if (sqlite3_prepare_v2(
+        app->db,
+        "SELECT id, username, name, role FROM users "
+        "WHERE status = 'active' AND role IN ('admin', 'developer', 'client') "
+        "ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'developer' THEN 1 ELSE 2 END, id ASC",
+        -1,
+        &stmt,
+        NULL
+      ) != SQLITE_OK) {
+    send_message(client, 500, "Internal Server Error", "读取演示账号失败");
+    return;
+  }
+
+  if (!append_format(body, sizeof(body), &off, "{\"items\":[")) {
+    sqlite3_finalize(stmt);
+    send_message(client, 500, "Internal Server Error", "演示账号列表过大");
+    return;
+  }
+
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    char username[128];
+    char name[256];
+    char role[64];
+    int user_id = sqlite3_column_int(stmt, 0);
+
+    json_escape(sqlite_text_or_empty(stmt, 1), username, sizeof(username));
+    json_escape(sqlite_text_or_empty(stmt, 2), name, sizeof(name));
+    json_escape(sqlite_text_or_empty(stmt, 3), role, sizeof(role));
+    if (!append_format(
+          body,
+          sizeof(body),
+          &off,
+          "%s{\"id\":%d,\"username\":\"%s\",\"name\":\"%s\",\"role\":\"%s\"}",
+          off == (sizeof("{\"items\":[") - 1) ? "" : ",",
+          user_id,
+          username,
+          name,
+          role
+        )) {
+      failed = 1;
+      break;
+    }
+  }
+  sqlite3_finalize(stmt);
+
+  if (failed || !append_format(body, sizeof(body), &off, "]}")) {
+    send_message(client, 500, "Internal Server Error", "演示账号列表过大");
+    return;
+  }
+
+  send_response(client, 200, "OK", body);
+}
+
+static void handle_demo_login(AppContext *app, SOCKET client, const HttpRequest *request) {
+  int user_id;
+  sqlite3_stmt *stmt = NULL;
+
+  if (!app->demo_quick_login_enabled) {
+    send_message(client, 404, "Not Found", "本地演示快捷登录未启用");
+    return;
+  }
+  if (!is_local_demo_origin(request)) {
+    send_message(client, 403, "Forbidden", "快捷登录只允许本机开发页面访问");
+    return;
+  }
+
+  if (!json_get_int(request->body, "userId", &user_id) || user_id <= 0) {
+    send_message(client, 400, "Bad Request", "缺少有效的账号 ID");
+    return;
+  }
+
+  if (sqlite3_prepare_v2(app->db, "SELECT status, role FROM users WHERE id = ?", -1, &stmt, NULL) != SQLITE_OK) {
+    send_message(client, 500, "Internal Server Error", "快捷登录失败");
+    return;
+  }
+
+  sqlite3_bind_int(stmt, 1, user_id);
+  if (sqlite3_step(stmt) != SQLITE_ROW) {
+    sqlite3_finalize(stmt);
+    send_message(client, 404, "Not Found", "账号不存在或不可用");
+    return;
+  }
+
+  if (strcmp(sqlite_text_or_empty(stmt, 0), "active") != 0 ||
+      (strcmp(sqlite_text_or_empty(stmt, 1), "admin") != 0 &&
+       strcmp(sqlite_text_or_empty(stmt, 1), "developer") != 0 &&
+       strcmp(sqlite_text_or_empty(stmt, 1), "client") != 0)) {
+    sqlite3_finalize(stmt);
+    send_message(client, 404, "Not Found", "账号不存在或不可用");
+    return;
+  }
+
+  sqlite3_finalize(stmt);
+  send_auth_payload(app->db, client, user_id);
 }
 
 static void handle_auth_me(AppContext *app, SOCKET client, const HttpRequest *request) {
@@ -2269,20 +3804,22 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
 
     if (is_admin(&user)) {
       sqlite3_prepare_v2(app->db,
-        "SELECT p.id, p.name, p.description, p.status, p.developer_id, p.client_id, d.name, c.name "
+        "SELECT p.id, p.name, p.description, p.status, p.developer_id, p.client_id, d.name, c.name, d.wallet_address, c.wallet_address, p.chain_status, p.tx_hash, p.candidate_tx_hash, p.chain_id, p.block_number, p.legacy_tx_hash, COALESCE(m.status,''), COALESCE(m.source_created_at,''), COALESCE(m.anchored_at,'') "
         "FROM projects p "
         "JOIN users d ON d.id = p.developer_id "
         "JOIN users c ON c.id = p.client_id "
+        "LEFT JOIN chain_migrations m ON m.project_id = p.id "
         "ORDER BY p.id DESC",
         -1,
         &stmt,
         NULL);
     } else {
       sqlite3_prepare_v2(app->db,
-        "SELECT p.id, p.name, p.description, p.status, p.developer_id, p.client_id, d.name, c.name "
+        "SELECT p.id, p.name, p.description, p.status, p.developer_id, p.client_id, d.name, c.name, d.wallet_address, c.wallet_address, p.chain_status, p.tx_hash, p.candidate_tx_hash, p.chain_id, p.block_number, p.legacy_tx_hash, COALESCE(m.status,''), COALESCE(m.source_created_at,''), COALESCE(m.anchored_at,'') "
         "FROM projects p "
         "JOIN users d ON d.id = p.developer_id "
         "JOIN users c ON c.id = p.client_id "
+        "LEFT JOIN chain_migrations m ON m.project_id = p.id "
         "JOIN project_members pm ON pm.project_id = p.id "
         "WHERE pm.user_id = ? "
         "GROUP BY p.id "
@@ -2294,18 +3831,31 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
     }
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-      char name[256], description[512], status[64], developer_name[128], client_name[128];
+      char name[256], description[512], status[64], developer_name[128], client_name[128], digest[65];
+      char developer_wallet[128], client_wallet[128], chain_status[64], tx_hash[128], candidate_hash[128], chain_id[32], legacy_hash[128];
+      char migration_status[32], source_created_at[64], anchored_at[64];
       json_escape((const char *) sqlite3_column_text(stmt, 1), name, sizeof(name));
       json_escape((const char *) sqlite3_column_text(stmt, 2), description, sizeof(description));
       json_escape((const char *) sqlite3_column_text(stmt, 3), status, sizeof(status));
       json_escape((const char *) sqlite3_column_text(stmt, 6), developer_name, sizeof(developer_name));
       json_escape((const char *) sqlite3_column_text(stmt, 7), client_name, sizeof(client_name));
+      json_escape((const char *) sqlite3_column_text(stmt, 8), developer_wallet, sizeof(developer_wallet));
+      json_escape((const char *) sqlite3_column_text(stmt, 9), client_wallet, sizeof(client_wallet));
+      json_escape((const char *) sqlite3_column_text(stmt, 10), chain_status, sizeof(chain_status));
+      json_escape((const char *) sqlite3_column_text(stmt, 11), tx_hash, sizeof(tx_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 12), candidate_hash, sizeof(candidate_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 13), chain_id, sizeof(chain_id));
+      json_escape((const char *) sqlite3_column_text(stmt, 15), legacy_hash, sizeof(legacy_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 16), migration_status, sizeof(migration_status));
+      json_escape((const char *) sqlite3_column_text(stmt, 17), source_created_at, sizeof(source_created_at));
+      json_escape((const char *) sqlite3_column_text(stmt, 18), anchored_at, sizeof(anchored_at));
+      build_project_digest(sqlite3_column_int(stmt, 0), sqlite3_column_int(stmt, 4), sqlite3_column_int(stmt, 5), sqlite_text_or_empty(stmt, 8), sqlite_text_or_empty(stmt, 9), sqlite_text_or_empty(stmt, 1), sqlite_text_or_empty(stmt, 2), digest);
 
       if (!append_format(
         body,
         sizeof(body),
         &off,
-        "%s{\"id\":%d,\"name\":\"%s\",\"description\":\"%s\",\"status\":\"%s\",\"developerId\":%d,\"clientId\":%d,\"developerName\":\"%s\",\"clientName\":\"%s\"}",
+        "%s{\"id\":%d,\"name\":\"%s\",\"description\":\"%s\",\"status\":\"%s\",\"developerId\":%d,\"clientId\":%d,\"developerName\":\"%s\",\"clientName\":\"%s\",\"developerWallet\":\"%s\",\"clientWallet\":\"%s\",\"digest\":\"%s\",\"chainStatus\":\"%s\",\"txHash\":\"%s\",\"candidateTxHash\":\"%s\",\"legacyTxHash\":\"%s\",\"chainId\":\"%s\",\"blockNumber\":%lld,\"recordOrigin\":\"%s\",\"sourceCreatedAt\":\"%s\",\"anchoredAt\":\"%s\"}",
         first ? "" : ",",
         sqlite3_column_int(stmt, 0),
         name,
@@ -2314,7 +3864,19 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
         sqlite3_column_int(stmt, 4),
         sqlite3_column_int(stmt, 5),
         developer_name,
-        client_name
+        client_name,
+        developer_wallet,
+        client_wallet,
+        digest,
+        chain_status,
+        tx_hash,
+        candidate_hash,
+        legacy_hash,
+        chain_id,
+        sqlite3_column_int64(stmt, 14),
+        strcmp(migration_status, "completed") == 0 ? "migration" : "live",
+        source_created_at,
+        anchored_at
       )) {
         sqlite3_finalize(stmt);
         send_message(client, 500, "Internal Server Error", "项目数据过大，响应构建失败");
@@ -2339,6 +3901,8 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
 
   {
     char name[128], description[512];
+    char developer_wallet[128] = "", client_wallet[128] = "";
+    char safe_developer_wallet[256], safe_client_wallet[256];
     int developer_id = 0;
     int client_id = 0;
     int project_id = 0;
@@ -2358,13 +3922,43 @@ static void handle_projects(AppContext *app, SOCKET client, const HttpRequest *r
       send_message(client, 400, "Bad Request", "客户不存在或已停用");
       return;
     }
+    if (!user.wallet_address[0]) {
+      send_message(client, 409, "Conflict", "管理员需要先绑定当前 MetaMask 钱包，再创建链上项目");
+      return;
+    }
+    if (sqlite3_prepare_v2(app->db, "SELECT wallet_address FROM users WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+      sqlite3_bind_int(stmt, 1, developer_id);
+      if (sqlite3_step(stmt) == SQLITE_ROW) {
+        copy_sqlite_text(stmt, 0, developer_wallet, sizeof(developer_wallet));
+      }
+    }
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (sqlite3_prepare_v2(app->db, "SELECT wallet_address FROM users WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+      sqlite3_bind_int(stmt, 1, client_id);
+      if (sqlite3_step(stmt) == SQLITE_ROW) {
+        copy_sqlite_text(stmt, 0, client_wallet, sizeof(client_wallet));
+      }
+    }
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (!developer_wallet[0] || !client_wallet[0]) {
+      send_message(client, 409, "Conflict", "开发者和客户都需要先在个人资料中绑定钱包，才能部署项目角色");
+      return;
+    }
 
     project_id = insert_project(app->db, name, description, "active", developer_id, client_id);
     insert_project_member(app->db, project_id, developer_id, "developer");
     insert_project_member(app->db, project_id, client_id, "client");
     add_audit_log(app->db, user.id, "create_project", "project", project_id, name);
 
-    snprintf(body, sizeof(body), "{\"message\":\"项目创建成功\",\"projectId\":%d}", project_id);
+    json_escape(developer_wallet, safe_developer_wallet, sizeof(safe_developer_wallet));
+    json_escape(client_wallet, safe_client_wallet, sizeof(safe_client_wallet));
+    {
+      char digest[65];
+      build_project_digest(project_id, developer_id, client_id, developer_wallet, client_wallet, name, description, digest);
+      snprintf(body, sizeof(body), "{\"message\":\"项目已保存，等待管理员钱包完成链上创建\",\"projectId\":%d,\"chainStatus\":\"pending\",\"developerWallet\":\"%s\",\"clientWallet\":\"%s\",\"digest\":\"%s\"}", project_id, safe_developer_wallet, safe_client_wallet, digest);
+    }
     send_response(client, 200, "OK", body);
   }
 }
@@ -2387,7 +3981,7 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
     }
     if (is_admin(&user)) {
       sqlite3_prepare_v2(app->db,
-        "SELECT w.id, w.project_id, p.name, w.user_id, u.name, w.stage_no, w.work_date, w.hours, w.task_description, w.digest, w.evidence_status, w.tx_hash, w.created_at "
+        "SELECT w.id, w.project_id, p.name, w.user_id, u.name, w.stage_no, w.work_date, w.hours, w.task_description, w.digest, w.evidence_status, w.tx_hash, w.created_at, w.candidate_tx_hash, w.legacy_tx_hash, w.chain_id, w.block_number, COALESCE((SELECT b.tx_hash FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),''), COALESCE((SELECT b.block_number FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),0), COALESCE((SELECT b.anchored_at FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),'') "
         "FROM worklogs w "
         "JOIN projects p ON p.id = w.project_id "
         "JOIN users u ON u.id = w.user_id "
@@ -2397,7 +3991,7 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
         NULL);
     } else if (is_developer(&user)) {
       sqlite3_prepare_v2(app->db,
-        "SELECT w.id, w.project_id, p.name, w.user_id, u.name, w.stage_no, w.work_date, w.hours, w.task_description, w.digest, w.evidence_status, w.tx_hash, w.created_at "
+        "SELECT w.id, w.project_id, p.name, w.user_id, u.name, w.stage_no, w.work_date, w.hours, w.task_description, w.digest, w.evidence_status, w.tx_hash, w.created_at, w.candidate_tx_hash, w.legacy_tx_hash, w.chain_id, w.block_number, COALESCE((SELECT b.tx_hash FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),''), COALESCE((SELECT b.block_number FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),0), COALESCE((SELECT b.anchored_at FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),'') "
         "FROM worklogs w "
         "JOIN projects p ON p.id = w.project_id "
         "JOIN users u ON u.id = w.user_id "
@@ -2409,7 +4003,7 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
       sqlite3_bind_int(stmt, 1, user.id);
     } else {
       sqlite3_prepare_v2(app->db,
-        "SELECT w.id, w.project_id, p.name, w.user_id, u.name, w.stage_no, w.work_date, w.hours, w.task_description, w.digest, w.evidence_status, w.tx_hash, w.created_at "
+        "SELECT w.id, w.project_id, p.name, w.user_id, u.name, w.stage_no, w.work_date, w.hours, w.task_description, w.digest, w.evidence_status, w.tx_hash, w.created_at, w.candidate_tx_hash, w.legacy_tx_hash, w.chain_id, w.block_number, COALESCE((SELECT b.tx_hash FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),''), COALESCE((SELECT b.block_number FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),0), COALESCE((SELECT b.anchored_at FROM chain_migration_batches b WHERE b.project_id=w.project_id AND b.category='worklogs' AND b.status='confirmed' LIMIT 1),'') "
         "FROM worklogs w "
         "JOIN projects p ON p.id = w.project_id "
         "JOIN users u ON u.id = w.user_id "
@@ -2422,7 +4016,7 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
     }
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-      char project_name[256], user_name[128], work_date[64], task[512], digest[128], status[64], tx_hash[128], created_at[64];
+      char project_name[256], user_name[128], work_date[64], task[512], digest[128], status[64], tx_hash[128], created_at[64], candidate_hash[128], legacy_hash[128], chain_id[32], migration_tx_hash[128], migration_anchored_at[64];
       json_escape((const char *) sqlite3_column_text(stmt, 2), project_name, sizeof(project_name));
       json_escape((const char *) sqlite3_column_text(stmt, 4), user_name, sizeof(user_name));
       json_escape((const char *) sqlite3_column_text(stmt, 6), work_date, sizeof(work_date));
@@ -2431,12 +4025,17 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
       json_escape((const char *) sqlite3_column_text(stmt, 10), status, sizeof(status));
       json_escape((const char *) sqlite3_column_text(stmt, 11), tx_hash, sizeof(tx_hash));
       json_escape((const char *) sqlite3_column_text(stmt, 12), created_at, sizeof(created_at));
+      json_escape((const char *) sqlite3_column_text(stmt, 13), candidate_hash, sizeof(candidate_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 14), legacy_hash, sizeof(legacy_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 15), chain_id, sizeof(chain_id));
+      json_escape((const char *) sqlite3_column_text(stmt, 17), migration_tx_hash, sizeof(migration_tx_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 19), migration_anchored_at, sizeof(migration_anchored_at));
 
       if (!append_format(
         body,
         sizeof(body),
         &off,
-        "%s{\"id\":%d,\"projectId\":%d,\"projectName\":\"%s\",\"userId\":%d,\"userName\":\"%s\",\"stageNo\":%d,\"workDate\":\"%s\",\"hours\":%.2f,\"taskDescription\":\"%s\",\"digest\":\"%s\",\"evidenceStatus\":\"%s\",\"txHash\":\"%s\",\"createdAt\":\"%s\"}",
+        "%s{\"id\":%d,\"projectId\":%d,\"projectName\":\"%s\",\"userId\":%d,\"userName\":\"%s\",\"stageNo\":%d,\"workDate\":\"%s\",\"hours\":%.2f,\"taskDescription\":\"%s\",\"digest\":\"%s\",\"evidenceStatus\":\"%s\",\"txHash\":\"%s\",\"candidateTxHash\":\"%s\",\"legacyTxHash\":\"%s\",\"chainId\":\"%s\",\"blockNumber\":%lld,\"createdAt\":\"%s\",\"migrationTxHash\":\"%s\",\"migrationBlockNumber\":%lld,\"migrationAnchoredAt\":\"%s\"}",
         first ? "" : ",",
         sqlite3_column_int(stmt, 0),
         sqlite3_column_int(stmt, 1),
@@ -2450,7 +4049,14 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
         digest,
         status,
         tx_hash,
-        created_at
+        candidate_hash,
+        legacy_hash,
+        chain_id,
+        sqlite3_column_int64(stmt, 16),
+        created_at,
+        migration_tx_hash,
+        sqlite3_column_int64(stmt, 18),
+        migration_anchored_at
       )) {
         sqlite3_finalize(stmt);
         send_message(client, 500, "Internal Server Error", "工时数据过大，响应构建失败");
@@ -2495,6 +4101,10 @@ static void handle_worklogs(AppContext *app, SOCKET client, const HttpRequest *r
       send_message(client, 403, "Forbidden", "你无权在该项目下登记工时");
       return;
     }
+    if (!project_is_chain_confirmed(app->db, project_id)) {
+      send_message(client, 409, "Conflict", "项目还没有完成链上创建或历史摘要迁移，请先完成链上项目准备");
+      return;
+    }
     stage_no = project_current_stage_for_write(app->db, project_id, &blocked_by_stage_audit);
     if (blocked_by_stage_audit) {
       send_message(client, 400, "Bad Request", "当前阶段已通过客户确认，等待管理员阶段审计后才能继续登记");
@@ -2529,7 +4139,7 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
 
     if (is_admin(&user)) {
       sqlite3_prepare_v2(app->db,
-        "SELECT d.id, d.project_id, p.name, d.user_id, u.name, d.stage_no, d.version, d.file_name, d.summary, d.file_hash, d.status, d.tx_hash, d.confirmation_comment, d.created_at "
+        "SELECT d.id, d.project_id, p.name, d.user_id, u.name, d.stage_no, d.version, d.file_name, d.summary, d.file_hash, d.status, d.tx_hash, d.confirmation_comment, d.created_at, d.candidate_tx_hash, d.legacy_tx_hash, d.confirmation_candidate_tx_hash, d.chain_id, d.confirmation_chain_id, COALESCE((SELECT a.tx_hash FROM approval_records a WHERE a.deliverable_id=d.id AND a.tx_hash<>'' ORDER BY a.id DESC LIMIT 1),''), COALESCE((SELECT a.block_number FROM approval_records a WHERE a.deliverable_id=d.id AND a.tx_hash<>'' ORDER BY a.id DESC LIMIT 1),0), COALESCE((SELECT b.tx_hash FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),''), COALESCE((SELECT b.block_number FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),0), COALESCE((SELECT b.anchored_at FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),''), d.evidence_origin "
         "FROM deliverables d "
         "JOIN projects p ON p.id = d.project_id "
         "JOIN users u ON u.id = d.user_id "
@@ -2539,7 +4149,7 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
         NULL);
     } else if (is_developer(&user)) {
       sqlite3_prepare_v2(app->db,
-        "SELECT d.id, d.project_id, p.name, d.user_id, u.name, d.stage_no, d.version, d.file_name, d.summary, d.file_hash, d.status, d.tx_hash, d.confirmation_comment, d.created_at "
+        "SELECT d.id, d.project_id, p.name, d.user_id, u.name, d.stage_no, d.version, d.file_name, d.summary, d.file_hash, d.status, d.tx_hash, d.confirmation_comment, d.created_at, d.candidate_tx_hash, d.legacy_tx_hash, d.confirmation_candidate_tx_hash, d.chain_id, d.confirmation_chain_id, COALESCE((SELECT a.tx_hash FROM approval_records a WHERE a.deliverable_id=d.id AND a.tx_hash<>'' ORDER BY a.id DESC LIMIT 1),''), COALESCE((SELECT a.block_number FROM approval_records a WHERE a.deliverable_id=d.id AND a.tx_hash<>'' ORDER BY a.id DESC LIMIT 1),0), COALESCE((SELECT b.tx_hash FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),''), COALESCE((SELECT b.block_number FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),0), COALESCE((SELECT b.anchored_at FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),''), d.evidence_origin "
         "FROM deliverables d "
         "JOIN projects p ON p.id = d.project_id "
         "JOIN users u ON u.id = d.user_id "
@@ -2551,7 +4161,7 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
       sqlite3_bind_int(stmt, 1, user.id);
     } else {
       sqlite3_prepare_v2(app->db,
-        "SELECT d.id, d.project_id, p.name, d.user_id, u.name, d.stage_no, d.version, d.file_name, d.summary, d.file_hash, d.status, d.tx_hash, d.confirmation_comment, d.created_at "
+        "SELECT d.id, d.project_id, p.name, d.user_id, u.name, d.stage_no, d.version, d.file_name, d.summary, d.file_hash, d.status, d.tx_hash, d.confirmation_comment, d.created_at, d.candidate_tx_hash, d.legacy_tx_hash, d.confirmation_candidate_tx_hash, d.chain_id, d.confirmation_chain_id, COALESCE((SELECT a.tx_hash FROM approval_records a WHERE a.deliverable_id=d.id AND a.tx_hash<>'' ORDER BY a.id DESC LIMIT 1),''), COALESCE((SELECT a.block_number FROM approval_records a WHERE a.deliverable_id=d.id AND a.tx_hash<>'' ORDER BY a.id DESC LIMIT 1),0), COALESCE((SELECT b.tx_hash FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),''), COALESCE((SELECT b.block_number FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),0), COALESCE((SELECT b.anchored_at FROM chain_migration_batches b WHERE b.project_id=d.project_id AND b.category='deliverables' AND b.status='confirmed' LIMIT 1),''), d.evidence_origin "
         "FROM deliverables d "
         "JOIN projects p ON p.id = d.project_id "
         "JOIN users u ON u.id = d.user_id "
@@ -2564,7 +4174,7 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
     }
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-      char project_name[256], user_name[128], version[64], file_name[256], summary[512], file_hash[128], status[64], tx_hash[128], confirmation_comment[512], created_at[64];
+      char project_name[256], user_name[128], version[64], file_name[256], summary[512], file_hash[128], status[64], tx_hash[128], confirmation_comment[512], created_at[64], candidate_hash[128], legacy_hash[128], confirmation_candidate_hash[128], chain_id[32], confirmation_chain_id[32], confirmation_tx_hash[128], migration_tx_hash[128], migration_anchored_at[64], evidence_origin[32];
       json_escape((const char *) sqlite3_column_text(stmt, 2), project_name, sizeof(project_name));
       json_escape((const char *) sqlite3_column_text(stmt, 4), user_name, sizeof(user_name));
       json_escape((const char *) sqlite3_column_text(stmt, 6), version, sizeof(version));
@@ -2575,12 +4185,21 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
       json_escape((const char *) sqlite3_column_text(stmt, 11), tx_hash, sizeof(tx_hash));
       json_escape((const char *) sqlite3_column_text(stmt, 12), confirmation_comment, sizeof(confirmation_comment));
       json_escape((const char *) sqlite3_column_text(stmt, 13), created_at, sizeof(created_at));
+      json_escape((const char *) sqlite3_column_text(stmt, 14), candidate_hash, sizeof(candidate_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 15), legacy_hash, sizeof(legacy_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 16), confirmation_candidate_hash, sizeof(confirmation_candidate_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 17), chain_id, sizeof(chain_id));
+      json_escape((const char *) sqlite3_column_text(stmt, 18), confirmation_chain_id, sizeof(confirmation_chain_id));
+      json_escape((const char *) sqlite3_column_text(stmt, 19), confirmation_tx_hash, sizeof(confirmation_tx_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 21), migration_tx_hash, sizeof(migration_tx_hash));
+      json_escape((const char *) sqlite3_column_text(stmt, 23), migration_anchored_at, sizeof(migration_anchored_at));
+      json_escape((const char *) sqlite3_column_text(stmt, 24), evidence_origin, sizeof(evidence_origin));
 
       if (!append_format(
         body,
         sizeof(body),
         &off,
-        "%s{\"id\":%d,\"projectId\":%d,\"projectName\":\"%s\",\"userId\":%d,\"userName\":\"%s\",\"stageNo\":%d,\"version\":\"%s\",\"fileName\":\"%s\",\"summary\":\"%s\",\"fileHash\":\"%s\",\"status\":\"%s\",\"txHash\":\"%s\",\"confirmationComment\":\"%s\",\"createdAt\":\"%s\"}",
+        "%s{\"id\":%d,\"projectId\":%d,\"projectName\":\"%s\",\"userId\":%d,\"userName\":\"%s\",\"stageNo\":%d,\"version\":\"%s\",\"fileName\":\"%s\",\"summary\":\"%s\",\"fileHash\":\"%s\",\"status\":\"%s\",\"txHash\":\"%s\",\"candidateTxHash\":\"%s\",\"legacyTxHash\":\"%s\",\"confirmationTxHash\":\"%s\",\"confirmationBlockNumber\":%lld,\"confirmationCandidateTxHash\":\"%s\",\"chainId\":\"%s\",\"confirmationChainId\":\"%s\",\"confirmationComment\":\"%s\",\"createdAt\":\"%s\",\"migrationTxHash\":\"%s\",\"migrationBlockNumber\":%lld,\"migrationAnchoredAt\":\"%s\",\"evidenceOrigin\":\"%s\"}",
         first ? "" : ",",
         sqlite3_column_int(stmt, 0),
         sqlite3_column_int(stmt, 1),
@@ -2594,8 +4213,19 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
         file_hash,
         status,
         tx_hash,
+        candidate_hash,
+        legacy_hash,
+        confirmation_tx_hash,
+        sqlite3_column_int64(stmt, 20),
+        confirmation_candidate_hash,
+        chain_id,
+        confirmation_chain_id,
         confirmation_comment,
-        created_at
+        created_at,
+        migration_tx_hash,
+        sqlite3_column_int64(stmt, 22),
+        migration_anchored_at,
+        evidence_origin
       )) {
         sqlite3_finalize(stmt);
         send_message(client, 500, "Internal Server Error", "交付物数据过大，响应构建失败");
@@ -2641,6 +4271,10 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
       send_message(client, 403, "Forbidden", "你无权在该项目下提交交付物");
       return;
     }
+    if (!project_is_chain_confirmed(app->db, project_id)) {
+      send_message(client, 409, "Conflict", "项目还没有完成链上创建或历史摘要迁移，请先完成链上项目准备");
+      return;
+    }
     stage_no = project_current_stage_for_write(app->db, project_id, &blocked_by_stage_audit);
     if (blocked_by_stage_audit) {
       send_message(client, 400, "Bad Request", "当前阶段已通过客户确认，等待管理员阶段审计后才能继续提交");
@@ -2657,114 +4291,243 @@ static void handle_deliverables(AppContext *app, SOCKET client, const HttpReques
 
 static void handle_evidence(AppContext *app, SOCKET client, const HttpRequest *request) {
   CurrentUser user;
+  ChainNetwork network;
+  ChainProofExpectation proof;
+  long long business_id_ll = 0, chain_id_ll = 0, actual_chain_id = 0, block_number = 0, latest_block = 0;
   int business_id = 0;
-  int block_number = 0;
-  char business_type[64];
-  char tx_hash[128];
-  char status[64];
-  char comment[512];
-  sqlite3_stmt *stmt = NULL;
+  int http_status = 400;
+  char business_type[64], tx_hash[128], chain_id[16], comment[512], error[512];
+  char receipt_response[65536], transaction_response[65536], params[256], tx_from[128], receipt_to[128], receipt_status[64], block_hex[64];
+  const char *receipt_start = NULL, *receipt_end = NULL, *transaction_start = NULL, *transaction_end = NULL;
+  char existing_hash[128] = "";
+  long long existing_block = 0;
+  char existing_chain_id[16] = "";
 
   if (!ensure_authenticated(app, client, request, &user)) {
     return;
   }
-
   if (!json_get_string(request->body, "businessType", business_type, sizeof(business_type)) ||
-      !json_get_int(request->body, "businessId", &business_id) ||
+      !json_get_long_long(request->body, "businessId", &business_id_ll) ||
       !json_get_string(request->body, "txHash", tx_hash, sizeof(tx_hash)) ||
-      !json_get_string(request->body, "status", status, sizeof(status))) {
-    send_message(client, 400, "Bad Request", "存证参数不完整");
+      !json_get_long_long(request->body, "chainId", &chain_id_ll)) {
+    send_message(client, 400, "Bad Request", "存证参数不完整；客户端只需提交业务类型、业务 ID、网络 ID 和交易哈希");
     return;
   }
-  if (!json_get_int(request->body, "blockNumber", &block_number)) {
-    block_number = 0;
+  business_id = (int) business_id_ll;
+  snprintf(chain_id, sizeof(chain_id), "%lld", chain_id_ll);
+  if (!valid_tx_hash(tx_hash)) {
+    send_message(client, 400, "Bad Request", "交易哈希格式无效");
+    return;
   }
   if (!json_get_string(request->body, "comment", comment, sizeof(comment))) {
     comment[0] = '\0';
   }
+  if (!load_chain_proof(app, &user, business_type, business_id, comment, &proof, error, sizeof(error), &http_status)) {
+    send_message(client, http_status, http_status == 403 ? "Forbidden" : http_status == 404 ? "Not Found" : http_status == 409 ? "Conflict" : "Bad Request", error);
+    return;
+  }
+  if (strcmp(business_type, "deliverable_confirmation") == 0 &&
+      existing_confirmation_tx(app->db, business_id, tx_hash, existing_hash, sizeof(existing_hash), existing_chain_id, sizeof(existing_chain_id), &existing_block)) {
+    if (strcmp(existing_chain_id, chain_id) != 0) {
+      send_message(client, 409, "Conflict", "该交易已在另一个网络核验，网络 ID 不匹配");
+      return;
+    }
+    char body[512];
+    snprintf(body, sizeof(body), "{\"message\":\"该客户决定交易已核验，未重复写入\",\"txHash\":\"%s\",\"blockNumber\":%lld,\"chainId\":%s}", existing_hash, existing_block, chain_id);
+    send_response(client, 200, "OK", body);
+    return;
+  }
+  if (strcmp(business_type, "deliverable_confirmation") != 0 && existing_chain_tx(app->db, business_type, business_id, proof.project_id, existing_hash, sizeof(existing_hash), existing_chain_id, sizeof(existing_chain_id), &existing_block)) {
+    if (_stricmp(existing_hash, tx_hash) == 0) {
+      char body[512];
+      if (strcmp(existing_chain_id, chain_id) != 0) {
+        send_message(client, 409, "Conflict", "该交易已在另一个网络核验，网络 ID 不匹配");
+        return;
+      }
+      snprintf(body, sizeof(body), "{\"message\":\"该交易已核验，未重复写入\",\"txHash\":\"%s\",\"blockNumber\":%lld,\"chainId\":%s}", existing_hash, existing_block, chain_id);
+      send_response(client, 200, "OK", body);
+    } else {
+      send_message(client, 409, "Conflict", "该业务记录已有另一笔已核验链上交易");
+    }
+    return;
+  }
+  if (!get_chain_network(chain_id, &network)) {
+    store_chain_candidate(app->db, business_type, business_id, proof.project_id, tx_hash, chain_id);
+    send_message(client, 503, "Service Unavailable", "该网络尚未配置 RPC 与合约地址，交易哈希已暂存，配置后可重试核验");
+    return;
+  }
+  store_chain_candidate(app->db, business_type, business_id, proof.project_id, tx_hash, chain_id);
 
-  if (strcmp(business_type, "worklog") == 0) {
-    if (!is_developer(&user) || !developer_owns_worklog(app->db, user.id, business_id)) {
-      send_message(client, 403, "Forbidden", "你无权为该工时写入存证");
-      return;
-    }
-    if (sqlite3_prepare_v2(app->db, "UPDATE worklogs SET tx_hash = ?, evidence_status = ? WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-      sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_text(stmt, 2, strcmp(status, "confirmed") == 0 ? "confirmed" : "failed", -1, SQLITE_STATIC);
-      sqlite3_bind_int(stmt, 3, business_id);
-      sqlite3_step(stmt);
-    }
-    sqlite3_finalize(stmt);
-    add_audit_log(app->db, user.id, "write_worklog_evidence", "worklog", business_id, tx_hash);
-  } else if (strcmp(business_type, "deliverable") == 0) {
-    if (!is_developer(&user)) {
-      send_message(client, 403, "Forbidden", "只有开发者可以提交交付物存证");
-      return;
-    }
-    if (sqlite3_prepare_v2(app->db, "UPDATE deliverables SET tx_hash = ?, status = ?, confirmation_comment = '' WHERE id = ? AND user_id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-      sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_text(stmt, 2, strcmp(status, "confirmed") == 0 ? "notarized" : "rejected", -1, SQLITE_STATIC);
-      sqlite3_bind_int(stmt, 3, business_id);
-      sqlite3_bind_int(stmt, 4, user.id);
-      sqlite3_step(stmt);
-    }
-    sqlite3_finalize(stmt);
-    add_audit_log(app->db, user.id, "write_deliverable_evidence", "deliverable", business_id, tx_hash);
-  } else if (strcmp(business_type, "deliverable_confirmation") == 0) {
-    if (!is_client_role(&user) || !client_owns_deliverable(app->db, user.id, business_id)) {
-      send_message(client, 403, "Forbidden", "你无权确认该交付物");
-      return;
-    }
-
-    insert_approval(app->db, business_id, user.id, strcmp(status, "confirmed") == 0 ? 1 : 0, comment, tx_hash);
-    if (sqlite3_prepare_v2(app->db, "UPDATE deliverables SET tx_hash = ?, status = ?, confirmation_comment = ? WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-      sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_text(stmt, 2, strcmp(status, "confirmed") == 0 ? "approved" : "rejected", -1, SQLITE_STATIC);
-      sqlite3_bind_text(stmt, 3, comment, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_int(stmt, 4, business_id);
-      sqlite3_step(stmt);
-    }
-    sqlite3_finalize(stmt);
-    add_audit_log(app->db, user.id, strcmp(status, "confirmed") == 0 ? "approve_deliverable" : "reject_deliverable", "deliverable", business_id, comment);
-  } else {
-    send_message(client, 400, "Bad Request", "不支持的业务类型");
+  if (!rpc_get_hex_value(&network, "eth_chainId", "[]", &actual_chain_id)) {
+    send_message(client, 503, "Service Unavailable", "链节点暂不可用，交易哈希已保留，请稍后重试核验");
+    return;
+  }
+  if (actual_chain_id != chain_id_ll) {
+    clear_chain_candidate(app->db, business_type, business_id, tx_hash);
+    send_message(client, 400, "Bad Request", "配置的 RPC 实际网络与提交的 chainId 不一致");
     return;
   }
 
-  insert_evidence(app->db, business_type, business_id, tx_hash, block_number, status, comment, user.id);
-  send_message(client, 200, "OK", "存证回写成功");
+  snprintf(params, sizeof(params), "[\"%s\"]", tx_hash);
+  if (!chain_rpc_call(&network, "eth_getTransactionReceipt", params, receipt_response, sizeof(receipt_response))) {
+    send_message(client, 503, "Service Unavailable", "读取交易回执失败，稍后可使用同一哈希重试");
+    return;
+  }
+  if (!rpc_result_range(receipt_response, &receipt_start, &receipt_end)) {
+    send_message(client, 202, "Accepted", "交易仍在等待打包，系统已保存待核验状态");
+    return;
+  }
+  if (!json_get_string_range(receipt_start, receipt_end, "status", receipt_status, sizeof(receipt_status)) || strcmp(receipt_status, "0x1") != 0) {
+    clear_chain_candidate(app->db, business_type, business_id, tx_hash);
+    send_message(client, 409, "Conflict", "链上交易执行失败，业务状态未推进");
+    return;
+  }
+  if (!json_get_string_range(receipt_start, receipt_end, "to", receipt_to, sizeof(receipt_to))) {
+    clear_chain_candidate(app->db, business_type, business_id, tx_hash);
+    send_message(client, 400, "Bad Request", "交易回执缺少目标合约地址");
+    return;
+  }
+  if (_stricmp(receipt_to, network.contract_address) != 0) {
+    clear_chain_candidate(app->db, business_type, business_id, tx_hash);
+    send_message(client, 400, "Bad Request", "交易目标不是当前配置的存證合约");
+    return;
+  }
+  if (!json_get_string_range(receipt_start, receipt_end, "blockNumber", block_hex, sizeof(block_hex)) || !rpc_hex_value(block_hex, &block_number)) {
+    send_message(client, 400, "Bad Request", "交易回执区块号无效");
+    return;
+  }
+  if (!chain_rpc_call(&network, "eth_getTransactionByHash", params, transaction_response, sizeof(transaction_response)) || !rpc_result_range(transaction_response, &transaction_start, &transaction_end) ||
+      !json_get_string_range(transaction_start, transaction_end, "from", tx_from, sizeof(tx_from))) {
+    send_message(client, 503, "Service Unavailable", "暂时无法读取交易提交者，稍后可重试核验");
+    return;
+  }
+  if (_stricmp(tx_from, proof.expected_wallet) != 0) {
+    clear_chain_candidate(app->db, business_type, business_id, tx_hash);
+    send_message(client, 403, "Forbidden", "交易签名钱包与当前业务角色绑定钱包不一致");
+    return;
+  }
+  if (!rpc_get_hex_value(&network, "eth_blockNumber", "[]", &latest_block)) {
+    send_message(client, 503, "Service Unavailable", "暂时无法读取最新区块，稍后可重试确认数校验");
+    return;
+  }
+  if (latest_block - block_number + 1 < network.confirmations) {
+    send_message(client, 202, "Accepted", "交易已打包，正在等待规定的区块确认数");
+    return;
+  }
+  if (strcmp(business_type, "deliverable_confirmation") == 0) {
+    if (!read_confirmation_decision(&network, &proof, receipt_start, receipt_end, &proof.decision)) {
+      clear_chain_candidate(app->db, business_type, business_id, tx_hash);
+      send_message(client, 400, "Bad Request", "回执中没有与交付物和项目匹配的客户确认事件");
+      return;
+    }
+  }
+  if (!verify_chain_event(&network, &proof, receipt_start, receipt_end)) {
+    clear_chain_candidate(app->db, business_type, business_id, tx_hash);
+    send_message(client, 400, "Bad Request", "回执中的合约事件或业务字段与数据库记录不匹配");
+    return;
+  }
+  apply_verified_chain_tx(app, &user, business_type, &proof, tx_hash, chain_id, block_number);
+  add_audit_log(app->db, user.id, "verify_chain_transaction", business_type, business_id, tx_hash);
+  {
+    char safe_hash[128], body[512];
+    json_escape(tx_hash, safe_hash, sizeof(safe_hash));
+    snprintf(body, sizeof(body), "{\"message\":\"链上回执与合约事件已核验\",\"txHash\":\"%s\",\"blockNumber\":%lld,\"chainId\":%s,\"status\":\"confirmed\"}", safe_hash, block_number, chain_id);
+    send_response(client, 200, "OK", body);
+  }
+}
+
+static void build_stage_audit_digest(sqlite3 *db, int project_id, int stage_no, const char *decision, char output[65]) {
+  sqlite3_stmt *stmt = NULL;
+  char *canonical = (char *) calloc(MAX_RESPONSE_SIZE, 1);
+  size_t off = 0;
+  if (!canonical) {
+    output[0] = '\0';
+    return;
+  }
+  append_format(canonical, MAX_RESPONSE_SIZE, &off, "project=%d|stage=%d|decision=%s\n", project_id, stage_no, decision);
+  if (sqlite3_prepare_v2(db, "SELECT id, digest FROM worklogs WHERE project_id = ? AND stage_no = ? ORDER BY id", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    sqlite3_bind_int(stmt, 2, stage_no);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      append_format(canonical, MAX_RESPONSE_SIZE, &off, "w:%d:%s\n", sqlite3_column_int(stmt, 0), sqlite_text_or_empty(stmt, 1));
+    }
+  }
+  sqlite3_finalize(stmt);
+  if (sqlite3_prepare_v2(db, "SELECT id, file_hash, status FROM deliverables WHERE project_id = ? AND stage_no = ? ORDER BY id", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    sqlite3_bind_int(stmt, 2, stage_no);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      append_format(canonical, MAX_RESPONSE_SIZE, &off, "d:%d:%s:%s\n", sqlite3_column_int(stmt, 0), sqlite_text_or_empty(stmt, 1), sqlite_text_or_empty(stmt, 2));
+    }
+  }
+  sqlite3_finalize(stmt);
+  if (sqlite3_prepare_v2(db, "SELECT a.id, a.deliverable_id, a.approved, a.tx_hash FROM approval_records a JOIN deliverables d ON d.id=a.deliverable_id WHERE d.project_id=? AND d.stage_no=? ORDER BY a.id", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    sqlite3_bind_int(stmt, 2, stage_no);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      append_format(canonical, MAX_RESPONSE_SIZE, &off, "c:%d:%d:%d:%s\n", sqlite3_column_int(stmt, 0), sqlite3_column_int(stmt, 1), sqlite3_column_int(stmt, 2), sqlite_text_or_empty(stmt, 3));
+    }
+  }
+  sqlite3_finalize(stmt);
+  sha256_hex(canonical, output);
+  free(canonical);
+}
+
+static void build_final_audit_digest(sqlite3 *db, int project_id, const char *decision, char output[65]) {
+  sqlite3_stmt *stmt = NULL;
+  char *canonical = (char *) calloc(MAX_RESPONSE_SIZE, 1);
+  size_t off = 0;
+  if (!canonical) {
+    output[0] = '\0';
+    return;
+  }
+  append_format(canonical, MAX_RESPONSE_SIZE, &off, "project=%d|decision=%s|stages=%d\n", project_id, decision, passed_stage_count(db, project_id));
+  if (sqlite3_prepare_v2(db, "SELECT id, stage_no, audit_type, decision, digest FROM project_audits WHERE project_id = ? AND status IN ('confirmed','legacy','migrated') ORDER BY id", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      append_format(canonical, MAX_RESPONSE_SIZE, &off, "a:%d:%d:%s:%s:%s\n", sqlite3_column_int(stmt, 0), sqlite3_column_int(stmt, 1), sqlite_text_or_empty(stmt, 2), sqlite_text_or_empty(stmt, 3), sqlite_text_or_empty(stmt, 4));
+    }
+  }
+  sqlite3_finalize(stmt);
+  sha256_hex(canonical, output);
+  free(canonical);
+}
+
+static int find_pending_audit(sqlite3 *db, int project_id, int stage_no, const char *audit_type, const char *decision, int *audit_id, char digest[65]) {
+  sqlite3_stmt *stmt = NULL;
+  int found = 0;
+  if (sqlite3_prepare_v2(db, "SELECT id, digest FROM project_audits WHERE project_id = ? AND (? < 0 OR stage_no = ?) AND audit_type = ? AND decision = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    sqlite3_bind_int(stmt, 2, stage_no);
+    sqlite3_bind_int(stmt, 3, stage_no);
+    sqlite3_bind_text(stmt, 4, audit_type, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, decision, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      *audit_id = sqlite3_column_int(stmt, 0);
+      copy_sqlite_text(stmt, 1, digest, 65);
+      found = 1;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return found;
 }
 
 static void handle_stage_audit(AppContext *app, SOCKET client, const HttpRequest *request) {
   CurrentUser user;
-  int project_id = 0;
-  int stage_no = 0;
-  int found = 0;
-  char decision[16];
-  char comment[512];
-  char project_name[256] = "";
-  char project_status[64] = "";
-  char tx_hash[128];
-  char detail[768];
-  char body[MAX_RESPONSE_SIZE];
-  sqlite3_stmt *stmt = NULL;
-  int project_audit_id = 0;
-  int latest_deliverable_id = 0;
+  int project_id = 0, stage_no = 0, audit_id = 0;
+  char decision[16], comment[512], digest[65], candidate[128] = "", chain_id[16] = "", body[1024];
   StageSnapshot snapshot;
-  const char *message;
-  const char *action;
-
+  sqlite3_stmt *stmt = NULL;
+  int unanchored_worklogs = 0;
+  int unanchored_deliverables = 0;
   if (!ensure_authenticated(app, client, request, &user)) {
     return;
   }
   if (!is_admin(&user)) {
-    send_message(client, 403, "Forbidden", "只有管理员可以执行阶段审计");
+    send_message(client, 403, "Forbidden", "只有管理员可以申请阶段审计");
     return;
   }
-
-  if (!json_get_int(request->body, "projectId", &project_id) ||
-      !json_get_int(request->body, "stageNo", &stage_no) ||
-      !json_get_string(request->body, "decision", decision, sizeof(decision))) {
+  if (!json_get_int(request->body, "projectId", &project_id) || !json_get_int(request->body, "stageNo", &stage_no) || !json_get_string(request->body, "decision", decision, sizeof(decision))) {
     send_message(client, 400, "Bad Request", "阶段审计参数不完整");
     return;
   }
@@ -2775,105 +4538,73 @@ static void handle_stage_audit(AppContext *app, SOCKET client, const HttpRequest
     send_message(client, 400, "Bad Request", "不支持的审计结论");
     return;
   }
-
-  if (sqlite3_prepare_v2(app->db, "SELECT name, status FROM projects WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+  if (!project_is_chain_confirmed(app->db, project_id)) {
+    send_message(client, 409, "Conflict", "项目尚未完成链上创建或历史摘要迁移");
+    return;
+  }
+  load_stage_snapshot(app->db, project_id, stage_no, &snapshot);
+  if (snapshot.deliverable_count == 0 || snapshot.worklog_count == 0 || strcmp(snapshot.latest_deliverable_status, "approved") != 0 || strcmp(snapshot.state, "pending_stage_audit") != 0) {
+    send_message(client, 409, "Conflict", "阶段必须有已存证工时、已存证交付物和客户链上通过记录");
+    return;
+  }
+  if (sqlite3_prepare_v2(app->db, "SELECT (SELECT COUNT(*) FROM worklogs WHERE project_id=? AND stage_no=? AND evidence_status NOT IN ('confirmed','migrated')),(SELECT COUNT(*) FROM deliverables WHERE project_id=? AND stage_no=? AND tx_hash='' AND evidence_origin<>'migration'),(SELECT COUNT(*) FROM deliverables d WHERE d.project_id=? AND d.stage_no=? AND d.id=(SELECT MAX(d2.id) FROM deliverables d2 WHERE d2.project_id=d.project_id AND d2.stage_no=d.stage_no) AND d.status='approved' AND d.tx_hash<>'' AND NOT EXISTS (SELECT 1 FROM approval_records a WHERE a.deliverable_id=d.id AND a.tx_hash<>'')),(SELECT COUNT(*) FROM deliverables d WHERE d.project_id=? AND d.stage_no=? AND d.id=(SELECT MAX(d2.id) FROM deliverables d2 WHERE d2.project_id=d.project_id AND d2.stage_no=d.stage_no) AND d.status='approved' AND d.evidence_origin='migration' AND NOT EXISTS (SELECT 1 FROM chain_migrations m WHERE m.project_id=d.project_id AND m.status='completed'))", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_int(stmt, 1, project_id);
+    sqlite3_bind_int(stmt, 2, stage_no);
+    sqlite3_bind_int(stmt, 3, project_id);
+    sqlite3_bind_int(stmt, 4, stage_no);
+    sqlite3_bind_int(stmt, 5, project_id);
+    sqlite3_bind_int(stmt, 6, stage_no);
+    sqlite3_bind_int(stmt, 7, project_id);
+    sqlite3_bind_int(stmt, 8, stage_no);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-      found = 1;
-      snprintf(project_name, sizeof(project_name), "%s", (const char *) sqlite3_column_text(stmt, 0));
-      snprintf(project_status, sizeof(project_status), "%s", (const char *) sqlite3_column_text(stmt, 1));
+      unanchored_worklogs = sqlite3_column_int(stmt, 0);
+      unanchored_deliverables = sqlite3_column_int(stmt, 1) + sqlite3_column_int(stmt, 2) + sqlite3_column_int(stmt, 3);
     }
   }
   sqlite3_finalize(stmt);
-
-  if (!found) {
-    send_message(client, 404, "Not Found", "待审项目不存在");
+  stmt = NULL;
+  if (unanchored_worklogs > 0 || unanchored_deliverables > 0) {
+    send_message(client, 409, "Conflict", "本阶段所有工时、交付物及客户确认都必须先完成真实交易核验，才能发起阶段审计");
     return;
   }
-  if (strcmp(project_status, "active") != 0) {
-    send_message(client, 400, "Bad Request", "当前项目不可执行阶段审计");
+  build_stage_audit_digest(app->db, project_id, stage_no, decision, digest);
+  if (!digest[0]) {
+    send_message(client, 500, "Internal Server Error", "阶段摘要计算失败");
     return;
   }
-
-  load_stage_snapshot(app->db, project_id, stage_no, &snapshot);
-  if (snapshot.stage_no <= 0 || snapshot.deliverable_count == 0) {
-    send_message(client, 404, "Not Found", "待审阶段不存在");
-    return;
-  }
-  if (strcmp(snapshot.state, "pending_stage_audit") != 0) {
-    send_message(client, 400, "Bad Request", "当前阶段尚未进入待审计状态");
-    return;
-  }
-
-  latest_deliverable_id = latest_deliverable_id_for_stage(app->db, project_id, stage_no);
-  snprintf(tx_hash, sizeof(tx_hash), "0xsa%08x%04x%04x", (unsigned int) time(NULL), project_id, stage_no);
-  project_audit_id = insert_project_audit(
-    app->db,
-    project_id,
-    stage_no,
-    "stage",
-    decision,
-    comment[0] ? comment : (strcmp(decision, "pass") == 0 ? "阶段审计通过。" : "阶段审计驳回。"),
-    tx_hash,
-    user.id
-  );
-
-  if (latest_deliverable_id > 0 && strcmp(decision, "reject") == 0) {
-    if (sqlite3_prepare_v2(app->db, "UPDATE deliverables SET status = 'rejected', confirmation_comment = ? WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-      sqlite3_bind_text(stmt, 1, comment[0] ? comment : "阶段审计驳回，需要继续修改。", -1, SQLITE_TRANSIENT);
-      sqlite3_bind_int(stmt, 2, latest_deliverable_id);
-      sqlite3_step(stmt);
-    }
+  if (!find_pending_audit(app->db, project_id, stage_no, "stage", decision, &audit_id, digest)) {
+    audit_id = insert_project_audit(app->db, project_id, stage_no, "stage", decision, comment, digest, user.id);
+  } else if (sqlite3_prepare_v2(app->db, "UPDATE project_audits SET comment = ? WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(stmt, 1, comment, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, audit_id);
+    sqlite3_step(stmt);
     sqlite3_finalize(stmt);
   }
-
-  insert_evidence(
-    app->db,
-    "stage_audit",
-    project_audit_id,
-    tx_hash,
-    (int) time(NULL),
-    strcmp(decision, "pass") == 0 ? "confirmed" : "failed",
-    comment[0] ? comment : (strcmp(decision, "pass") == 0 ? "阶段审计通过。" : "阶段审计驳回。"),
-    user.id
-  );
-
-  action = strcmp(decision, "pass") == 0 ? "stage_audit_pass" : "stage_audit_reject";
-  message = strcmp(decision, "pass") == 0 ? "阶段审计已通过" : "阶段审计已驳回";
-  snprintf(detail, sizeof(detail), "%s｜阶段 %d", project_name, stage_no);
-  add_audit_log(app->db, user.id, action, "project_stage", project_id, detail);
-
-  snprintf(body, sizeof(body), "{\"message\":\"%s\",\"projectId\":%d,\"stageNo\":%d,\"txHash\":\"%s\"}", message, project_id, stage_no, tx_hash);
+  if (sqlite3_prepare_v2(app->db, "SELECT candidate_tx_hash, chain_id FROM project_audits WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, audit_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      copy_sqlite_text(stmt, 0, candidate, sizeof(candidate));
+      copy_sqlite_text(stmt, 1, chain_id, sizeof(chain_id));
+    }
+  }
+  sqlite3_finalize(stmt);
+  snprintf(body, sizeof(body), "{\"message\":\"请在 MetaMask 中确认阶段审计交易\",\"businessId\":%d,\"projectId\":%d,\"stageNo\":%d,\"digest\":\"%s\",\"decision\":\"%s\",\"candidateTxHash\":\"%s\",\"chainId\":\"%s\"}", audit_id, project_id, stage_no, digest, decision, candidate, chain_id);
   send_response(client, 200, "OK", body);
 }
 
 static void handle_final_audit(AppContext *app, SOCKET client, const HttpRequest *request) {
   CurrentUser user;
-  int project_id = 0;
-  int found = 0;
-  char decision[16];
-  char comment[512];
-  char project_name[256] = "";
-  char project_status[64] = "";
-  char detail[768];
-  char body[MAX_RESPONSE_SIZE];
   sqlite3_stmt *stmt = NULL;
-  int project_audit_id = 0;
-  char tx_hash[128];
-  const char *next_status;
-  const char *action;
-  const char *message;
-
+  int project_id = 0, audit_id = 0, stage_no = 0;
+  char decision[16], comment[512], digest[65], project_status[64], candidate[128] = "", chain_id[16] = "", body[1024];
   if (!ensure_authenticated(app, client, request, &user)) {
     return;
   }
   if (!is_admin(&user)) {
-    send_message(client, 403, "Forbidden", "只有管理员可以执行最终审计");
+    send_message(client, 403, "Forbidden", "只有管理员可以申请最终审计");
     return;
   }
-
-  if ((!json_get_int(request->body, "projectId", &project_id) && !json_get_int(request->body, "targetId", &project_id)) ||
-      !json_get_string(request->body, "decision", decision, sizeof(decision))) {
+  if (!json_get_int(request->body, "projectId", &project_id) || !json_get_string(request->body, "decision", decision, sizeof(decision))) {
     send_message(client, 400, "Bad Request", "最终审计参数不完整");
     return;
   }
@@ -2884,69 +4615,577 @@ static void handle_final_audit(AppContext *app, SOCKET client, const HttpRequest
     send_message(client, 400, "Bad Request", "不支持的审计结论");
     return;
   }
-
-  if (sqlite3_prepare_v2(app->db, "SELECT name, status FROM projects WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+  if (!project_is_chain_confirmed(app->db, project_id)) {
+    send_message(client, 409, "Conflict", "项目尚未完成链上创建或历史摘要迁移");
+    return;
+  }
+  if (sqlite3_prepare_v2(app->db, "SELECT status FROM projects WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
     sqlite3_bind_int(stmt, 1, project_id);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-      found = 1;
-      snprintf(project_name, sizeof(project_name), "%s", (const char *) sqlite3_column_text(stmt, 0));
-      snprintf(project_status, sizeof(project_status), "%s", (const char *) sqlite3_column_text(stmt, 1));
+      copy_sqlite_text(stmt, 0, project_status, sizeof(project_status));
     }
   }
   sqlite3_finalize(stmt);
-
-  if (!found) {
-    send_message(client, 404, "Not Found", "待审项目不存在");
-    return;
-  }
-
   if (!project_can_run_final_audit(app->db, project_status, project_id)) {
     char hint[256];
     build_final_audit_hint(app->db, project_status, project_id, hint, sizeof(hint));
-    send_message(client, 400, "Bad Request", hint);
+    send_message(client, 409, "Conflict", hint);
     return;
   }
-
-  next_status = strcmp(decision, "pass") == 0 ? "completed" : "disputed";
-  action = strcmp(decision, "pass") == 0 ? "final_audit_pass" : "final_audit_reject";
-  message = strcmp(decision, "pass") == 0 ? "最终审计已通过" : "最终审计已驳回";
-  snprintf(tx_hash, sizeof(tx_hash), "0xfa%08x%04x", (unsigned int) time(NULL), project_id);
-
-  if (sqlite3_prepare_v2(app->db, "UPDATE projects SET status = ? WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, next_status, -1, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 2, project_id);
+  stage_no = project_max_stage_no(app->db, project_id);
+  build_final_audit_digest(app->db, project_id, decision, digest);
+  if (!find_pending_audit(app->db, project_id, -1, "final", decision, &audit_id, digest)) {
+    audit_id = insert_project_audit(app->db, project_id, stage_no, "final", decision, comment, digest, user.id);
+  } else if (sqlite3_prepare_v2(app->db, "UPDATE project_audits SET stage_no = ?, comment = ? WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, stage_no);
+    sqlite3_bind_text(stmt, 2, comment, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, audit_id);
     sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+  if (sqlite3_prepare_v2(app->db, "SELECT candidate_tx_hash, chain_id FROM project_audits WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, audit_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      copy_sqlite_text(stmt, 0, candidate, sizeof(candidate));
+      copy_sqlite_text(stmt, 1, chain_id, sizeof(chain_id));
+    }
   }
   sqlite3_finalize(stmt);
+  snprintf(body, sizeof(body), "{\"message\":\"请在 MetaMask 中确认最终审计交易\",\"businessId\":%d,\"projectId\":%d,\"digest\":\"%s\",\"decision\":\"%s\",\"candidateTxHash\":\"%s\",\"chainId\":\"%s\"}", audit_id, project_id, digest, decision, candidate, chain_id);
+  send_response(client, 200, "OK", body);
+}
 
-  if (comment[0]) {
-    snprintf(detail, sizeof(detail), "%s｜%s", project_name, comment);
-  } else {
-    snprintf(detail, sizeof(detail), "%s", project_name);
+typedef struct {
+  int id;
+  int batch_no;
+  int category_id;
+  int record_count;
+  long long source_from;
+  long long source_to;
+  long long block_number;
+  char category[32];
+  char digest[65];
+  char candidate_tx_hash[128];
+  char tx_hash[128];
+  char chain_id[16];
+  char status[32];
+  char anchored_at[64];
+} MigrationBatch;
+
+typedef struct {
+  int project_id;
+  int batch_count;
+  int current_stage;
+  int passed_stage_count;
+  int finalized;
+  int final_approved;
+  int current_stage_worklog_count;
+  int current_stage_deliverable_count;
+  int latest_deliverable_id;
+  int latest_deliverable_stage;
+  int current_stage_client_approved;
+  int total_worklog_count;
+  int total_deliverable_count;
+  int total_approval_count;
+  int total_stage_audit_count;
+  int total_final_audit_count;
+  char source_fingerprint[65];
+  long long source_created_at;
+  long long checkpoint_block_number;
+  char project_name[128];
+  char developer_wallet[128];
+  char client_wallet[128];
+  char source_created_at_text[64];
+  char checkpoint_hash[65];
+  char checkpoint_candidate_tx_hash[128];
+  char checkpoint_tx_hash[128];
+  char checkpoint_chain_id[16];
+  char status[32];
+  char anchored_at[64];
+  MigrationBatch batches[6];
+} MigrationPlan;
+
+static const char *migration_category_sql(const char *category) {
+  if (strcmp(category, "worklogs") == 0) {
+    return "SELECT id, stage_no, work_date, hours, task_description, digest, created_at FROM worklogs WHERE project_id = ? ORDER BY id";
   }
-  project_audit_id = insert_project_audit(
-    app->db,
-    project_id,
-    0,
-    "final",
-    decision,
-    comment[0] ? comment : (strcmp(decision, "pass") == 0 ? "项目总审计通过。" : "项目总审计驳回。"),
-    tx_hash,
-    user.id
-  );
-  insert_evidence(
-    app->db,
-    "final_audit",
-    project_audit_id,
-    tx_hash,
-    (int) time(NULL),
-    strcmp(decision, "pass") == 0 ? "confirmed" : "failed",
-    comment[0] ? comment : (strcmp(decision, "pass") == 0 ? "项目总审计通过。" : "项目总审计驳回。"),
-    user.id
-  );
-  add_audit_log(app->db, user.id, action, "project", project_id, detail);
+  if (strcmp(category, "deliverables") == 0) {
+    return "SELECT id, stage_no, version, file_name, summary, file_hash, COALESCE(NULLIF(legacy_status, ''), status), COALESCE(NULLIF(legacy_confirmation_comment, ''), confirmation_comment), created_at FROM deliverables WHERE project_id = ? ORDER BY id";
+  }
+  if (strcmp(category, "confirmations") == 0) {
+    return "SELECT a.id, a.deliverable_id, a.client_id, a.approved, a.comment, a.created_at FROM approval_records a JOIN deliverables d ON d.id = a.deliverable_id WHERE d.project_id = ? ORDER BY a.id";
+  }
+  if (strcmp(category, "stage_audits") == 0) {
+    return "SELECT id, stage_no, decision, comment, digest, created_at FROM project_audits WHERE project_id = ? AND audit_type = 'stage' AND status IN ('confirmed','legacy','migrated') ORDER BY id";
+  }
+  if (strcmp(category, "final_audits") == 0) {
+    return "SELECT id, stage_no, decision, comment, digest, created_at FROM project_audits WHERE project_id = ? AND audit_type = 'final' AND status IN ('confirmed','legacy','migrated') ORDER BY id";
+  }
+  return NULL;
+}
 
-  snprintf(body, sizeof(body), "{\"message\":\"%s\",\"projectId\":%d,\"status\":\"%s\",\"txHash\":\"%s\"}", message, project_id, next_status, tx_hash);
+static int compute_migration_category(sqlite3 *db, int project_id, const char *category, int category_id, MigrationBatch *batch) {
+  const char *sql = migration_category_sql(category);
+  sqlite3_stmt *stmt = NULL;
+  const size_t canonical_size = 16 * 1024 * 1024;
+  char *canonical = (char *) calloc(canonical_size, 1);
+  size_t off = 0;
+  int rc;
+  if (!sql || !canonical || sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+    sqlite3_finalize(stmt);
+    free(canonical);
+    return 0;
+  }
+  sqlite3_bind_int(stmt, 1, project_id);
+  append_format(canonical, canonical_size, &off, "project=%d|category=%s\n", project_id, category);
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    int column;
+    int column_count = sqlite3_column_count(stmt);
+    for (column = 0; column < column_count; column++) {
+      int type = sqlite3_column_type(stmt, column);
+      if (type == SQLITE_INTEGER) {
+        append_format(canonical, canonical_size, &off, "|i:%lld", sqlite3_column_int64(stmt, column));
+      } else if (type == SQLITE_FLOAT) {
+        append_format(canonical, canonical_size, &off, "|f:%.17g", sqlite3_column_double(stmt, column));
+      } else {
+        const unsigned char *value = sqlite3_column_text(stmt, column);
+        int bytes = sqlite3_column_bytes(stmt, column);
+        append_format(canonical, canonical_size, &off, "|s:%d:", bytes);
+        if (bytes > 0 && off + (size_t) bytes + 2 < canonical_size) {
+          memcpy(canonical + off, value, (size_t) bytes);
+          off += (size_t) bytes;
+          canonical[off++] = '\n';
+          canonical[off] = '\0';
+        }
+      }
+    }
+    if (off + 2 < canonical_size) {
+      canonical[off++] = '\n';
+      canonical[off] = '\0';
+    }
+    batch->record_count++;
+  }
+  sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE || off >= canonical_size - 1) {
+    free(canonical);
+    return 0;
+  }
+  if (batch->record_count == 0) {
+    free(canonical);
+    return 2;
+  }
+  sha256_hex(canonical, batch->digest);
+  free(canonical);
+  batch->category_id = category_id;
+  snprintf(batch->category, sizeof(batch->category), "%s", category);
+  {
+    const char *range_sql = NULL;
+    sqlite3_stmt *range_stmt = NULL;
+    if (strcmp(category, "worklogs") == 0) range_sql = "SELECT CAST(strftime('%s', MIN(created_at)) AS INTEGER), CAST(strftime('%s', MAX(created_at)) AS INTEGER) FROM worklogs WHERE project_id = ?";
+    else if (strcmp(category, "deliverables") == 0) range_sql = "SELECT CAST(strftime('%s', MIN(created_at)) AS INTEGER), CAST(strftime('%s', MAX(created_at)) AS INTEGER) FROM deliverables WHERE project_id = ?";
+    else if (strcmp(category, "confirmations") == 0) range_sql = "SELECT CAST(strftime('%s', MIN(a.created_at)) AS INTEGER), CAST(strftime('%s', MAX(a.created_at)) AS INTEGER) FROM approval_records a JOIN deliverables d ON d.id = a.deliverable_id WHERE d.project_id = ?";
+    else if (strcmp(category, "stage_audits") == 0) range_sql = "SELECT CAST(strftime('%s', MIN(created_at)) AS INTEGER), CAST(strftime('%s', MAX(created_at)) AS INTEGER) FROM project_audits WHERE project_id = ? AND audit_type = 'stage' AND status IN ('confirmed','legacy','migrated')";
+    else if (strcmp(category, "final_audits") == 0) range_sql = "SELECT CAST(strftime('%s', MIN(created_at)) AS INTEGER), CAST(strftime('%s', MAX(created_at)) AS INTEGER) FROM project_audits WHERE project_id = ? AND audit_type = 'final' AND status IN ('confirmed','legacy','migrated')";
+    else range_sql = "SELECT CAST(strftime('%s', created_at) AS INTEGER), CAST(strftime('%s', created_at) AS INTEGER) FROM projects WHERE id = ?";
+    if (sqlite3_prepare_v2(db, range_sql, -1, &range_stmt, NULL) == SQLITE_OK) {
+      sqlite3_bind_int(range_stmt, 1, project_id);
+      if (sqlite3_step(range_stmt) == SQLITE_ROW) {
+        batch->source_from = sqlite3_column_int64(range_stmt, 0);
+        batch->source_to = sqlite3_column_int64(range_stmt, 1);
+      }
+    }
+    sqlite3_finalize(range_stmt);
+  }
+  return 1;
+}
+
+static int compute_migration_plan(sqlite3 *db, int project_id, MigrationPlan *plan) {
+  static const char *categories[5] = { "worklogs", "deliverables", "confirmations", "stage_audits", "final_audits" };
+  static const int category_ids[5] = { 1, 2, 3, 4, 5 };
+  sqlite3_stmt *stmt = NULL;
+  char chain_status[32], project_status[32];
+  StageSnapshot snapshot;
+  int i;
+  char *checkpoint_canonical = (char *) calloc(32768, 1);
+  size_t off = 0;
+  memset(plan, 0, sizeof(*plan));
+  plan->project_id = project_id;
+  if (!checkpoint_canonical || !get_project_wallets(db, project_id, plan->developer_wallet, plan->client_wallet, chain_status, sizeof(chain_status), project_status, sizeof(project_status), plan->source_created_at_text, sizeof(plan->source_created_at_text))) {
+    free(checkpoint_canonical);
+    return 0;
+  }
+  if (sqlite3_prepare_v2(db, "SELECT name, CAST(strftime('%s', created_at) AS INTEGER) FROM projects WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      copy_sqlite_text(stmt, 0, plan->project_name, sizeof(plan->project_name));
+      plan->source_created_at = sqlite3_column_int64(stmt, 1);
+    }
+  }
+  sqlite3_finalize(stmt);
+  if (!plan->developer_wallet[0] || !plan->client_wallet[0] || plan->source_created_at <= 0) {
+    free(checkpoint_canonical);
+    return 0;
+  }
+  {
+    int max_stage = project_max_stage_no(db, project_id);
+    plan->passed_stage_count = passed_stage_count(db, project_id);
+    plan->current_stage = max_stage > 0 ? max_stage : 1;
+    if (max_stage > 0) {
+      load_stage_snapshot(db, project_id, max_stage, &snapshot);
+      if (strcmp(snapshot.state, "closed") == 0) {
+        plan->current_stage = max_stage + 1;
+      }
+    }
+    if (plan->passed_stage_count >= plan->current_stage) {
+      plan->current_stage = plan->passed_stage_count + 1;
+    }
+    if (plan->current_stage <= max_stage) {
+      StageSnapshot current;
+      load_stage_snapshot(db, project_id, plan->current_stage, &current);
+      plan->current_stage_worklog_count = current.worklog_count;
+      plan->current_stage_deliverable_count = current.deliverable_count;
+      plan->latest_deliverable_id = latest_deliverable_id_for_stage(db, project_id, plan->current_stage);
+      plan->latest_deliverable_stage = plan->latest_deliverable_id > 0 ? plan->current_stage : 0;
+      plan->current_stage_client_approved = current.latest_deliverable_status[0] && strcmp(current.latest_deliverable_status, "approved") == 0;
+    }
+  }
+  plan->finalized = 0;
+  plan->final_approved = 0;
+  if (sqlite3_prepare_v2(db, "SELECT (SELECT COUNT(*) FROM worklogs WHERE project_id=?),(SELECT COUNT(*) FROM deliverables WHERE project_id=?),(SELECT COUNT(*) FROM approval_records a JOIN deliverables d ON d.id=a.deliverable_id WHERE d.project_id=?),(SELECT COUNT(*) FROM project_audits WHERE project_id=? AND audit_type='stage' AND status IN ('confirmed','legacy','migrated')),(SELECT COUNT(*) FROM project_audits WHERE project_id=? AND audit_type='final' AND status IN ('confirmed','legacy','migrated'))", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    sqlite3_bind_int(stmt, 2, project_id);
+    sqlite3_bind_int(stmt, 3, project_id);
+    sqlite3_bind_int(stmt, 4, project_id);
+    sqlite3_bind_int(stmt, 5, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      plan->total_worklog_count = sqlite3_column_int(stmt, 0);
+      plan->total_deliverable_count = sqlite3_column_int(stmt, 1);
+      plan->total_approval_count = sqlite3_column_int(stmt, 2);
+      plan->total_stage_audit_count = sqlite3_column_int(stmt, 3);
+      plan->total_final_audit_count = sqlite3_column_int(stmt, 4);
+    }
+  }
+  sqlite3_finalize(stmt);
+  for (i = 0; i < 5; i++) {
+    MigrationBatch batch;
+    int result;
+    memset(&batch, 0, sizeof(batch));
+    batch.batch_no = plan->batch_count;
+    result = compute_migration_category(db, project_id, categories[i], category_ids[i], &batch);
+    if (result == 0) {
+      free(checkpoint_canonical);
+      return 0;
+    }
+    if (result == 2) {
+      continue;
+    }
+    plan->batches[plan->batch_count++] = batch;
+  }
+  if (sqlite3_prepare_v2(db, "SELECT decision FROM project_audits WHERE project_id=? AND audit_type='final' AND status IN ('confirmed','legacy','migrated') ORDER BY id DESC LIMIT 1", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      plan->finalized = 1;
+      plan->final_approved = strcmp(sqlite_text_or_empty(stmt, 0), "pass") == 0;
+    }
+  }
+  sqlite3_finalize(stmt);
+  stmt = NULL;
+  if (plan->finalized) {
+    plan->current_stage_worklog_count = 0;
+    plan->current_stage_deliverable_count = 0;
+    plan->latest_deliverable_id = 0;
+    plan->latest_deliverable_stage = 0;
+    plan->current_stage_client_approved = 0;
+  }
+  append_format(checkpoint_canonical, 32768, &off, "project=%d|created=%lld|current=%d|passed=%d|currentWorklogs=%d|currentDeliverables=%d|latestDeliverable=%d|currentApproved=%d|finalized=%d|approved=%d|totalWorklogs=%d|totalDeliverables=%d|totalConfirmations=%d|totalStageAudits=%d|totalFinalAudits=%d|developer=%s|client=%s\n", project_id, plan->source_created_at, plan->current_stage, plan->passed_stage_count, plan->current_stage_worklog_count, plan->current_stage_deliverable_count, plan->latest_deliverable_id, plan->current_stage_client_approved, plan->finalized, plan->final_approved, plan->total_worklog_count, plan->total_deliverable_count, plan->total_approval_count, plan->total_stage_audit_count, plan->total_final_audit_count, plan->developer_wallet, plan->client_wallet);
+  for (i = 0; i < plan->batch_count; i++) {
+    MigrationBatch *batch = &plan->batches[i];
+    batch->batch_no = i;
+    append_format(checkpoint_canonical, 32768, &off, "batch=%d|category=%s|digest=%s|count=%d|from=%lld|to=%lld\n", i, batch->category, batch->digest, batch->record_count, batch->source_from, batch->source_to);
+  }
+  sha256_hex(checkpoint_canonical, plan->checkpoint_hash);
+  snprintf(plan->source_fingerprint, sizeof(plan->source_fingerprint), "%s", plan->checkpoint_hash);
+  /* Reuse a dedicated plan fingerprint over the exact frozen source totals and batch list. */
+  free(checkpoint_canonical);
+  snprintf(plan->status, sizeof(plan->status), "preview");
+  return 1;
+}
+
+static void compute_migration_fingerprint(MigrationPlan *plan);
+
+static void compute_migration_fingerprint(MigrationPlan *plan) {
+  char *canonical = (char *) calloc(32768, 1);
+  size_t off = 0;
+  int i;
+  if (!canonical) {
+    plan->source_fingerprint[0] = '\0';
+    return;
+  }
+  append_format(canonical, 32768, &off,
+    "project=%d|created=%lld|checkpoint=%s|batches=%d|developer=%s|client=%s\n",
+    plan->project_id, plan->source_created_at, plan->checkpoint_hash, plan->batch_count, plan->developer_wallet, plan->client_wallet);
+  for (i = 0; i < plan->batch_count; i++) {
+    const MigrationBatch *batch = &plan->batches[i];
+    append_format(canonical, 32768, &off,
+      "batch=%d|category=%s|digest=%s|count=%d|from=%lld|to=%lld\n",
+      batch->batch_no, batch->category, batch->digest, batch->record_count, batch->source_from, batch->source_to);
+  }
+  sha256_hex(canonical, plan->source_fingerprint);
+  free(canonical);
+}
+
+static int load_saved_migration(sqlite3 *db, int project_id, MigrationPlan *plan) {
+  sqlite3_stmt *stmt = NULL;
+  int found = 0;
+  memset(plan, 0, sizeof(*plan));
+  if (sqlite3_prepare_v2(db, "SELECT m.checkpoint_hash,m.batch_count,m.source_created_at,CAST(strftime('%s',m.source_created_at) AS INTEGER),m.current_stage,m.passed_stage_count,m.finalized,m.final_approved,m.checkpoint_candidate_tx_hash,m.checkpoint_tx_hash,m.checkpoint_chain_id,m.checkpoint_block_number,m.status,m.anchored_at,p.name,d.wallet_address,c.wallet_address FROM chain_migrations m JOIN projects p ON p.id=m.project_id JOIN users d ON d.id=p.developer_id JOIN users c ON c.id=p.client_id WHERE m.project_id=?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      plan->project_id = project_id;
+      copy_sqlite_text(stmt, 0, plan->checkpoint_hash, sizeof(plan->checkpoint_hash));
+      plan->batch_count = sqlite3_column_int(stmt, 1);
+      copy_sqlite_text(stmt, 2, plan->source_created_at_text, sizeof(plan->source_created_at_text));
+      plan->source_created_at = sqlite3_column_int64(stmt, 3);
+      plan->current_stage = sqlite3_column_int(stmt, 4);
+      plan->passed_stage_count = sqlite3_column_int(stmt, 5);
+      plan->finalized = sqlite3_column_int(stmt, 6);
+      plan->final_approved = sqlite3_column_int(stmt, 7);
+      copy_sqlite_text(stmt, 8, plan->checkpoint_candidate_tx_hash, sizeof(plan->checkpoint_candidate_tx_hash));
+      copy_sqlite_text(stmt, 9, plan->checkpoint_tx_hash, sizeof(plan->checkpoint_tx_hash));
+      copy_sqlite_text(stmt, 10, plan->checkpoint_chain_id, sizeof(plan->checkpoint_chain_id));
+      plan->checkpoint_block_number = sqlite3_column_int64(stmt, 11);
+      copy_sqlite_text(stmt, 12, plan->status, sizeof(plan->status));
+      copy_sqlite_text(stmt, 13, plan->anchored_at, sizeof(plan->anchored_at));
+      copy_sqlite_text(stmt, 14, plan->project_name, sizeof(plan->project_name));
+      copy_sqlite_text(stmt, 15, plan->developer_wallet, sizeof(plan->developer_wallet));
+      copy_sqlite_text(stmt, 16, plan->client_wallet, sizeof(plan->client_wallet));
+      found = 1;
+    }
+  }
+  sqlite3_finalize(stmt);
+  if (!found) {
+    return 0;
+  }
+  if (sqlite3_prepare_v2(db, "SELECT id,batch_no,category,category_id,digest,record_count,source_from,source_to,candidate_tx_hash,tx_hash,chain_id,block_number,status,anchored_at FROM chain_migration_batches WHERE project_id=? ORDER BY batch_no", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW && plan->batch_count <= 6) {
+      MigrationBatch *batch = &plan->batches[sqlite3_column_int(stmt, 1)];
+      batch->id = sqlite3_column_int(stmt, 0);
+      batch->batch_no = sqlite3_column_int(stmt, 1);
+      copy_sqlite_text(stmt, 2, batch->category, sizeof(batch->category));
+      batch->category_id = sqlite3_column_int(stmt, 3);
+      copy_sqlite_text(stmt, 4, batch->digest, sizeof(batch->digest));
+      batch->record_count = sqlite3_column_int(stmt, 5);
+      batch->source_from = sqlite3_column_int64(stmt, 6);
+      batch->source_to = sqlite3_column_int64(stmt, 7);
+      copy_sqlite_text(stmt, 8, batch->candidate_tx_hash, sizeof(batch->candidate_tx_hash));
+      copy_sqlite_text(stmt, 9, batch->tx_hash, sizeof(batch->tx_hash));
+      copy_sqlite_text(stmt, 10, batch->chain_id, sizeof(batch->chain_id));
+      batch->block_number = sqlite3_column_int64(stmt, 11);
+      copy_sqlite_text(stmt, 12, batch->status, sizeof(batch->status));
+      copy_sqlite_text(stmt, 13, batch->anchored_at, sizeof(batch->anchored_at));
+    }
+  }
+  sqlite3_finalize(stmt);
+  if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM chain_migration_batches WHERE project_id=? AND status='confirmed'", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      if (!plan->checkpoint_tx_hash[0]) {
+        snprintf(plan->status, sizeof(plan->status), "pending");
+      } else {
+        snprintf(plan->status, sizeof(plan->status), "%s", sqlite3_column_int(stmt, 0) == plan->batch_count ? "completed" : "confirmed");
+      }
+    }
+  }
+  sqlite3_finalize(stmt);
+  if (strcmp(plan->status, "completed") == 0) {
+    if (plan->finalized) {
+      plan->current_stage_worklog_count = 0;
+      plan->current_stage_deliverable_count = 0;
+      plan->latest_deliverable_id = 0;
+      plan->current_stage_client_approved = 0;
+    } else if (plan->current_stage_deliverable_count > 0) {
+      sqlite3_stmt *stage_stmt = NULL;
+      if (sqlite3_prepare_v2(db, "SELECT id FROM chain_migration_batches WHERE project_id=? AND category='deliverables' LIMIT 1", -1, &stage_stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(stage_stmt, 1, project_id);
+        if (sqlite3_step(stage_stmt) == SQLITE_ROW) {
+          plan->latest_deliverable_id = latest_deliverable_id_for_stage(db, project_id, plan->current_stage);
+      plan->latest_deliverable_stage = plan->latest_deliverable_id > 0 ? plan->current_stage : 0;
+        }
+      }
+      sqlite3_finalize(stage_stmt);
+    }
+  }
+  if (sqlite3_prepare_v2(db, "SELECT current_stage_worklog_count,current_stage_deliverable_count,total_worklog_count,total_deliverable_count,total_confirmation_count,total_stage_audit_count,total_final_audit_count,latest_deliverable_id,current_stage_client_approved FROM chain_migrations WHERE project_id=?", -1, &stmt, NULL) == SQLITE_OK) {
+    sqlite3_bind_int(stmt, 1, project_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      plan->current_stage_worklog_count = sqlite3_column_int(stmt, 0);
+      plan->current_stage_deliverable_count = sqlite3_column_int(stmt, 1);
+      plan->total_worklog_count = sqlite3_column_int(stmt, 2);
+      plan->total_deliverable_count = sqlite3_column_int(stmt, 3);
+      plan->total_approval_count = sqlite3_column_int(stmt, 4);
+      plan->total_stage_audit_count = sqlite3_column_int(stmt, 5);
+      plan->total_final_audit_count = sqlite3_column_int(stmt, 6);
+      plan->latest_deliverable_id = sqlite3_column_int(stmt, 7);
+      plan->latest_deliverable_stage = plan->latest_deliverable_id > 0 ? plan->current_stage : 0;
+      plan->current_stage_client_approved = sqlite3_column_int(stmt, 8);
+    }
+  }
+  sqlite3_finalize(stmt);
+  if (strcmp(plan->status, "completed") == 0 && plan->finalized) {
+    plan->current_stage_worklog_count = 0;
+    plan->current_stage_deliverable_count = 0;
+    plan->latest_deliverable_id = 0;
+    plan->latest_deliverable_stage = 0;
+    plan->current_stage_client_approved = 0;
+  }
+  compute_migration_fingerprint(plan);
+  return 1;
+}
+
+static void write_migration_plan_json(const MigrationPlan *plan, char *body, size_t body_size, int include_preview) {
+  size_t off = 0;
+  int i;
+  char name[256], developer_wallet[256], client_wallet[256], source_text[128], status[64], checkpoint_candidate[256], checkpoint_tx[256], checkpoint_chain[32], anchored[128];
+  json_escape(plan->project_name, name, sizeof(name));
+  json_escape(plan->developer_wallet, developer_wallet, sizeof(developer_wallet));
+  json_escape(plan->client_wallet, client_wallet, sizeof(client_wallet));
+  json_escape(plan->source_created_at_text, source_text, sizeof(source_text));
+  json_escape(plan->status, status, sizeof(status));
+  json_escape(plan->checkpoint_candidate_tx_hash, checkpoint_candidate, sizeof(checkpoint_candidate));
+  json_escape(plan->checkpoint_tx_hash, checkpoint_tx, sizeof(checkpoint_tx));
+  json_escape(plan->checkpoint_chain_id, checkpoint_chain, sizeof(checkpoint_chain));
+  json_escape(plan->anchored_at, anchored, sizeof(anchored));
+  append_format(body, body_size, &off, "{\"projectId\":%d,\"projectName\":\"%s\",\"status\":\"%s\",\"checkpoint\":{\"digest\":\"%s\",\"batchCount\":%d,\"sourceCreatedAt\":%lld,\"sourceCreatedAtText\":\"%s\",\"currentStage\":%d,\"passedStageCount\":%d,\"currentStageWorklogCount\":%d,\"currentStageDeliverableCount\":%d,\"latestDeliverableId\":%d,\"latestDeliverableStage\":%d,\"currentStageClientApproved\":%s,\"finalized\":%s,\"finalApproved\":%s,\"totalWorklogCount\":%d,\"totalDeliverableCount\":%d,\"totalConfirmationCount\":%d,\"totalStageAuditCount\":%d,\"totalFinalAuditCount\":%d,\"developerWallet\":\"%s\",\"clientWallet\":\"%s\",\"candidateTxHash\":\"%s\",\"txHash\":\"%s\",\"chainId\":\"%s\",\"blockNumber\":%lld,\"anchoredAt\":\"%s\"},\"batches\":[",
+    plan->project_id, name, status, plan->checkpoint_hash, plan->batch_count, plan->source_created_at, source_text, plan->current_stage, plan->passed_stage_count, plan->current_stage_worklog_count, plan->current_stage_deliverable_count, plan->latest_deliverable_id, plan->latest_deliverable_stage, plan->current_stage_client_approved ? "true" : "false", plan->finalized ? "true" : "false", plan->final_approved ? "true" : "false", plan->total_worklog_count, plan->total_deliverable_count, plan->total_approval_count, plan->total_stage_audit_count, plan->total_final_audit_count, developer_wallet, client_wallet, checkpoint_candidate, checkpoint_tx, checkpoint_chain, plan->checkpoint_block_number, anchored);
+  for (i = 0; i < plan->batch_count; i++) {
+    const MigrationBatch *batch = &plan->batches[i];
+    char category[64], candidate[256], tx[256], chain[32], batch_status[64], batch_anchored[128];
+    json_escape(batch->category, category, sizeof(category));
+    json_escape(batch->candidate_tx_hash, candidate, sizeof(candidate));
+    json_escape(batch->tx_hash, tx, sizeof(tx));
+    json_escape(batch->chain_id, chain, sizeof(chain));
+    json_escape(batch->status, batch_status, sizeof(batch_status));
+    json_escape(batch->anchored_at, batch_anchored, sizeof(batch_anchored));
+    append_format(body, body_size, &off, "%s{\"id\":%d,\"batchNo\":%d,\"category\":\"%s\",\"categoryId\":%d,\"digest\":\"%s\",\"recordCount\":%d,\"sourceFrom\":%lld,\"sourceTo\":%lld,\"candidateTxHash\":\"%s\",\"txHash\":\"%s\",\"chainId\":\"%s\",\"blockNumber\":%lld,\"status\":\"%s\",\"anchoredAt\":\"%s\"}",
+      i == 0 ? "" : ",", batch->id, batch->batch_no, category, batch->category_id, batch->digest, batch->record_count, batch->source_from, batch->source_to, candidate, tx, chain, batch->block_number, batch_status, batch_anchored);
+  }
+  if (include_preview && off + 2 < body_size) {
+    append_format(body, body_size, &off, "],\"sourceFingerprint\":\"%s\",\"previewOnly\":true}", plan->source_fingerprint[0] ? plan->source_fingerprint : plan->checkpoint_hash);
+    return;
+  }
+  append_format(body, body_size, &off, "]}");
+}
+
+static void handle_migration_preview(AppContext *app, SOCKET client, const HttpRequest *request, int start) {
+  CurrentUser user;
+  MigrationPlan plan;
+  sqlite3_stmt *stmt = NULL;
+  int project_id = 0;
+  char body[MAX_RESPONSE_SIZE];
+  char developer_wallet[128], client_wallet[128], chain_status[32], project_status[32], created_at[64];
+  if (!ensure_authenticated(app, client, request, &user)) {
+    return;
+  }
+  if (!is_admin(&user)) {
+    send_message(client, 403, "Forbidden", "只有管理员可以预览或启动历史迁移");
+    return;
+  }
+  if (!json_get_int(request->body, "projectId", &project_id) || project_id <= 0) {
+    send_message(client, 400, "Bad Request", "请指定迁移项目");
+    return;
+  }
+  if (start && !load_saved_migration(app->db, project_id, &plan) &&
+      get_project_wallets(app->db, project_id, developer_wallet, client_wallet, chain_status, sizeof(chain_status), project_status, sizeof(project_status), created_at, sizeof(created_at)) &&
+      strcmp(chain_status, "confirmed") == 0) {
+    send_message(client, 409, "Conflict", "项目已有真实链上记录，无需再次迁移");
+    return;
+  }
+  if (start && load_saved_migration(app->db, project_id, &plan)) {
+    write_migration_plan_json(&plan, body, sizeof(body), 0);
+    send_response(client, 200, "OK", body);
+    return;
+  }
+  if (!start && load_saved_migration(app->db, project_id, &plan)) {
+    write_migration_plan_json(&plan, body, sizeof(body), 0);
+    send_response(client, 200, "OK", body);
+    return;
+  }
+  if (!compute_migration_plan(app->db, project_id, &plan)) {
+    send_message(client, 404, "Not Found", "项目不存在、缺少成员钱包或历史摘要计算失败");
+    return;
+  }
+  compute_migration_fingerprint(&plan);
+  if (start) {
+    sqlite3_exec(app->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if (sqlite3_prepare_v2(app->db, "INSERT INTO chain_migrations(project_id,checkpoint_hash,batch_count,source_created_at,current_stage,passed_stage_count,current_stage_worklog_count,current_stage_deliverable_count,total_worklog_count,total_deliverable_count,total_confirmation_count,total_stage_audit_count,total_final_audit_count,latest_deliverable_id,current_stage_client_approved,finalized,final_approved,status,source_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending',?)", -1, &stmt, NULL) == SQLITE_OK) {
+      sqlite3_bind_int(stmt, 1, project_id);
+      sqlite3_bind_text(stmt, 2, plan.checkpoint_hash, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(stmt, 3, plan.batch_count);
+      sqlite3_bind_text(stmt, 4, plan.source_created_at_text, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(stmt, 5, plan.current_stage);
+      sqlite3_bind_int(stmt, 6, plan.passed_stage_count);
+      sqlite3_bind_int(stmt, 7, plan.current_stage_worklog_count);
+      sqlite3_bind_int(stmt, 8, plan.current_stage_deliverable_count);
+      sqlite3_bind_int(stmt, 9, plan.total_worklog_count);
+      sqlite3_bind_int(stmt, 10, plan.total_deliverable_count);
+      sqlite3_bind_int(stmt, 11, plan.total_approval_count);
+      sqlite3_bind_int(stmt, 12, plan.total_stage_audit_count);
+      sqlite3_bind_int(stmt, 13, plan.total_final_audit_count);
+      sqlite3_bind_int(stmt, 14, plan.latest_deliverable_id);
+      sqlite3_bind_int(stmt, 15, plan.current_stage_client_approved);
+      sqlite3_bind_int(stmt, 16, plan.finalized);
+      sqlite3_bind_int(stmt, 17, plan.final_approved);
+      sqlite3_bind_text(stmt, 18, plan.source_fingerprint, -1, SQLITE_TRANSIENT);
+      sqlite3_step(stmt);
+    }
+    sqlite3_finalize(stmt);
+    for (int i = 0; i < plan.batch_count; i++) {
+      MigrationBatch *batch = &plan.batches[i];
+      if (sqlite3_prepare_v2(app->db, "INSERT INTO chain_migration_batches(project_id,batch_no,category,category_id,digest,record_count,source_from,source_to,status) VALUES (?,?,?,?,?,?,?,?, 'pending')", -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, project_id);
+        sqlite3_bind_int(stmt, 2, batch->batch_no);
+        sqlite3_bind_text(stmt, 3, batch->category, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 4, batch->category_id);
+        sqlite3_bind_text(stmt, 5, batch->digest, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 6, batch->record_count);
+        sqlite3_bind_int64(stmt, 7, batch->source_from);
+        sqlite3_bind_int64(stmt, 8, batch->source_to);
+        sqlite3_step(stmt);
+      }
+      sqlite3_finalize(stmt);
+    }
+    sqlite3_exec(app->db, "COMMIT", NULL, NULL, NULL);
+    load_saved_migration(app->db, project_id, &plan);
+  }
+  write_migration_plan_json(&plan, body, sizeof(body), !start);
+  send_response(client, 200, "OK", body);
+}
+
+static void handle_migration_get(AppContext *app, SOCKET client, const HttpRequest *request) {
+  CurrentUser user;
+  MigrationPlan plan;
+  char project_text[32], body[MAX_RESPONSE_SIZE];
+  int project_id = 0;
+  if (!ensure_authenticated(app, client, request, &user)) {
+    return;
+  }
+  if (!is_admin(&user)) {
+    send_message(client, 403, "Forbidden", "只有管理员可以查看历史迁移状态");
+    return;
+  }
+  if (!get_query_param(request->path, "projectId", project_text, sizeof(project_text))) {
+    send_message(client, 400, "Bad Request", "请指定项目 ID");
+    return;
+  }
+  project_id = atoi(project_text);
+  if (!load_saved_migration(app->db, project_id, &plan)) {
+    if (!compute_migration_plan(app->db, project_id, &plan)) {
+      send_message(client, 404, "Not Found", "项目不存在或迁移摘要计算失败");
+      return;
+    }
+  }
+  write_migration_plan_json(&plan, body, sizeof(body), 0);
   send_response(client, 200, "OK", body);
 }
 
@@ -4027,33 +6266,43 @@ static void handle_dashboard(AppContext *app, SOCKET client, const HttpRequest *
   first = 1;
 
   if (is_admin(&user)) {
-    sqlite3_prepare_v2(app->db, "SELECT e.id, e.business_type, e.tx_hash, e.status, e.created_at FROM evidence_records e ORDER BY e.id DESC LIMIT 8", -1, &stmt, NULL);
+  sqlite3_prepare_v2(app->db, "SELECT e.id, e.business_type, e.tx_hash, e.status, e.created_at, e.chain_id, e.block_number, e.record_origin, e.source_created_at, e.anchored_at FROM evidence_records e WHERE e.tx_hash <> '' ORDER BY e.id DESC LIMIT 8", -1, &stmt, NULL);
   } else if (is_developer(&user)) {
-    sqlite3_prepare_v2(app->db, "SELECT e.id, e.business_type, e.tx_hash, e.status, e.created_at FROM evidence_records e WHERE e.actor_id = ? ORDER BY e.id DESC LIMIT 8", -1, &stmt, NULL);
+    sqlite3_prepare_v2(app->db, "SELECT e.id, e.business_type, e.tx_hash, e.status, e.created_at, e.chain_id, e.block_number, e.record_origin, e.source_created_at, e.anchored_at FROM evidence_records e WHERE e.actor_id = ? AND e.tx_hash <> '' ORDER BY e.id DESC LIMIT 8", -1, &stmt, NULL);
     sqlite3_bind_int(stmt, 1, user.id);
   } else {
-    sqlite3_prepare_v2(app->db, "SELECT e.id, e.business_type, e.tx_hash, e.status, e.created_at FROM evidence_records e WHERE e.actor_id = ? OR e.business_type = 'deliverable_confirmation' ORDER BY e.id DESC LIMIT 8", -1, &stmt, NULL);
+    sqlite3_prepare_v2(app->db, "SELECT e.id, e.business_type, e.tx_hash, e.status, e.created_at, e.chain_id, e.block_number, e.record_origin, e.source_created_at, e.anchored_at FROM evidence_records e WHERE (e.actor_id = ? OR (e.business_type = 'deliverable_confirmation' AND e.business_id IN (SELECT d.id FROM deliverables d JOIN projects p ON p.id=d.project_id WHERE p.client_id=?))) AND e.tx_hash <> '' ORDER BY e.id DESC LIMIT 8", -1, &stmt, NULL);
     sqlite3_bind_int(stmt, 1, user.id);
+    sqlite3_bind_int(stmt, 2, user.id);
   }
 
   while (sqlite3_step(stmt) == SQLITE_ROW) {
-    char type[64], tx_hash[128], status[64], created_at[64];
+    char type[64], tx_hash[128], status[64], created_at[64], chain_id[32], origin[32], source_created_at[64], anchored_at[64];
     json_escape((const char *) sqlite3_column_text(stmt, 1), type, sizeof(type));
     json_escape((const char *) sqlite3_column_text(stmt, 2), tx_hash, sizeof(tx_hash));
     json_escape((const char *) sqlite3_column_text(stmt, 3), status, sizeof(status));
     json_escape((const char *) sqlite3_column_text(stmt, 4), created_at, sizeof(created_at));
+    json_escape((const char *) sqlite3_column_text(stmt, 5), chain_id, sizeof(chain_id));
+    json_escape((const char *) sqlite3_column_text(stmt, 7), origin, sizeof(origin));
+    json_escape((const char *) sqlite3_column_text(stmt, 8), source_created_at, sizeof(source_created_at));
+    json_escape((const char *) sqlite3_column_text(stmt, 9), anchored_at, sizeof(anchored_at));
 
     if (!append_format(
       body,
       sizeof(body),
       &off,
-      "%s{\"id\":%d,\"type\":\"%s\",\"txHash\":\"%s\",\"status\":\"%s\",\"createdAt\":\"%s\"}",
+      "%s{\"id\":%d,\"type\":\"%s\",\"txHash\":\"%s\",\"status\":\"%s\",\"createdAt\":\"%s\",\"chainId\":\"%s\",\"blockNumber\":%lld,\"recordOrigin\":\"%s\",\"sourceCreatedAt\":\"%s\",\"anchoredAt\":\"%s\"}",
       first ? "" : ",",
       sqlite3_column_int(stmt, 0),
       type,
       tx_hash,
       status,
-      created_at
+      created_at,
+      chain_id,
+      sqlite3_column_int64(stmt, 6),
+      origin,
+      source_created_at,
+      anchored_at
     )) {
       sqlite3_finalize(stmt);
       send_message(client, 500, "Internal Server Error", "存证数据过大，响应构建失败");
@@ -4086,26 +6335,35 @@ static void handle_audit(AppContext *app, SOCKET client, const HttpRequest *requ
   }
 
   off += (size_t) snprintf(body + off, sizeof(body) - off, "{\"transactions\":[");
-  sqlite3_prepare_v2(app->db, "SELECT id, business_type, tx_hash, status, comment, created_at FROM evidence_records ORDER BY id DESC LIMIT 12", -1, &stmt, NULL);
+  sqlite3_prepare_v2(app->db, "SELECT id, business_type, tx_hash, status, comment, created_at, chain_id, block_number, record_origin, source_created_at, anchored_at FROM evidence_records WHERE tx_hash <> '' ORDER BY id DESC LIMIT 12", -1, &stmt, NULL);
   while (sqlite3_step(stmt) == SQLITE_ROW) {
-    char type[64], tx_hash[128], status[64], comment[512], created_at[64];
+    char type[64], tx_hash[128], status[64], comment[512], created_at[64], chain_id[32], origin[32], source_created_at[64], anchored_at[64];
     json_escape((const char *) sqlite3_column_text(stmt, 1), type, sizeof(type));
     json_escape((const char *) sqlite3_column_text(stmt, 2), tx_hash, sizeof(tx_hash));
     json_escape((const char *) sqlite3_column_text(stmt, 3), status, sizeof(status));
     json_escape((const char *) sqlite3_column_text(stmt, 4), comment, sizeof(comment));
     json_escape((const char *) sqlite3_column_text(stmt, 5), created_at, sizeof(created_at));
+    json_escape((const char *) sqlite3_column_text(stmt, 6), chain_id, sizeof(chain_id));
+    json_escape((const char *) sqlite3_column_text(stmt, 8), origin, sizeof(origin));
+    json_escape((const char *) sqlite3_column_text(stmt, 9), source_created_at, sizeof(source_created_at));
+    json_escape((const char *) sqlite3_column_text(stmt, 10), anchored_at, sizeof(anchored_at));
 
     off += (size_t) snprintf(
       body + off,
       sizeof(body) - off,
-      "%s{\"id\":%d,\"type\":\"%s\",\"txHash\":\"%s\",\"status\":\"%s\",\"comment\":\"%s\",\"createdAt\":\"%s\"}",
+      "%s{\"id\":%d,\"type\":\"%s\",\"txHash\":\"%s\",\"status\":\"%s\",\"comment\":\"%s\",\"createdAt\":\"%s\",\"chainId\":\"%s\",\"blockNumber\":%lld,\"recordOrigin\":\"%s\",\"sourceCreatedAt\":\"%s\",\"anchoredAt\":\"%s\"}",
       first ? "" : ",",
       sqlite3_column_int(stmt, 0),
       type,
       tx_hash,
       status,
       comment,
-      created_at
+      created_at,
+      chain_id,
+      sqlite3_column_int64(stmt, 7),
+      origin,
+      source_created_at,
+      anchored_at
     );
     first = 0;
   }
@@ -4274,8 +6532,14 @@ static void route_request(AppContext *app, SOCKET client, const HttpRequest *req
     serve_upload(client, request);
   } else if (strcmp(request->path, "/api/health") == 0 && strcmp(request->method, "GET") == 0) {
     send_message(client, 200, "OK", "backend running");
+  } else if (strcmp(request->path, "/api/chain/config") == 0 && strcmp(request->method, "GET") == 0) {
+    handle_chain_config(client);
   } else if (strcmp(request->path, "/api/auth/login") == 0 && strcmp(request->method, "POST") == 0) {
     handle_auth_login(app, client, request);
+  } else if (strcmp(request->path, "/api/auth/demo-accounts") == 0 && strcmp(request->method, "GET") == 0) {
+    handle_demo_accounts_get(app, client, request);
+  } else if (strcmp(request->path, "/api/auth/demo-login") == 0 && strcmp(request->method, "POST") == 0) {
+    handle_demo_login(app, client, request);
   } else if (strcmp(request->path, "/api/auth/me") == 0 && strcmp(request->method, "GET") == 0) {
     handle_auth_me(app, client, request);
   } else if (strcmp(request->path, "/api/auth/profile") == 0 && strcmp(request->method, "PUT") == 0) {
@@ -4326,6 +6590,12 @@ static void route_request(AppContext *app, SOCKET client, const HttpRequest *req
     handle_deliverables(app, client, request);
   } else if (strcmp(request->path, "/api/evidence") == 0 && strcmp(request->method, "POST") == 0) {
     handle_evidence(app, client, request);
+  } else if (strcmp(request->path, "/api/chain/migration/preview") == 0 && strcmp(request->method, "POST") == 0) {
+    handle_migration_preview(app, client, request, 0);
+  } else if (strcmp(request->path, "/api/chain/migration/start") == 0 && strcmp(request->method, "POST") == 0) {
+    handle_migration_preview(app, client, request, 1);
+  } else if (path_matches(request->path, "/api/chain/migration") && strcmp(request->method, "GET") == 0) {
+    handle_migration_get(app, client, request);
   } else if (path_matches(request->path, "/api/process-flow") && strcmp(request->method, "GET") == 0) {
     handle_process_flow(app, client, request);
   } else if ((strcmp(request->path, "/api/dashboard") == 0 || strcmp(request->path, "/api/admin/overview") == 0) && strcmp(request->method, "GET") == 0) {
@@ -4347,9 +6617,20 @@ int main(int argc, char **argv) {
   struct sockaddr_in server_addr;
   AppContext app;
 
+  {
+    const char *port_value = getenv("TRUST_WORK_PORT");
+    long parsed_port = port_value && port_value[0] ? strtol(port_value, NULL, 10) : SERVER_PORT;
+    app.server_port = parsed_port > 0 && parsed_port <= 65535 ? (int) parsed_port : SERVER_PORT;
+  }
+
   if (!init_database(&app.db)) {
     fprintf(stderr, "Failed to initialize database\n");
     return 1;
+  }
+
+  {
+    const char *demo_quick_login = getenv("TRUST_WORK_ENABLE_DEMO_QUICK_LOGIN");
+    app.demo_quick_login_enabled = demo_quick_login && strcmp(demo_quick_login, "1") == 0;
   }
 
   if (argc > 1 && strcmp(argv[1], "--init-admin") == 0) {
@@ -4375,18 +6656,18 @@ int main(int argc, char **argv) {
   }
 
   server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(SERVER_PORT);
-  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  server_addr.sin_port = htons((u_short) app.server_port);
+  server_addr.sin_addr.s_addr = htonl(app.demo_quick_login_enabled ? INADDR_LOOPBACK : INADDR_ANY);
   if (bind(server_socket, (struct sockaddr *) &server_addr, sizeof(server_addr)) == SOCKET_ERROR ||
       listen(server_socket, SOMAXCONN) == SOCKET_ERROR) {
-    fprintf(stderr, "Failed to bind/listen on port %d\n", SERVER_PORT);
+    fprintf(stderr, "Failed to bind/listen on port %d\n", app.server_port);
     closesocket(server_socket);
     sqlite3_close(app.db);
     WSACleanup();
     return 1;
   }
 
-  printf("Trust Work backend running at http://localhost:%d\n", SERVER_PORT);
+  printf("Trust Work backend running at http://localhost:%d\n", app.server_port);
   while (1) {
     SOCKET client = accept(server_socket, NULL, NULL);
     if (client != INVALID_SOCKET) {

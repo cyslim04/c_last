@@ -4,7 +4,10 @@ import AppShell from "../components/AppShell.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
+import { useAuthStore } from "../stores/auth";
+import { confirmEvidenceTransaction, getPendingEvidence, retryEvidenceVerification, submitFinalAudit as sendFinalAudit, submitMigrationBatch, submitMigrationCheckpoint, submitStageAudit as sendStageAudit } from "../web3/evidence";
 
+const auth = useAuthStore();
 
 const audit = ref({
   transactions: [],
@@ -22,6 +25,11 @@ const selectedFinalProjectId = ref(null);
 const stageAuditOpen = ref(false);
 const finalAuditOpen = ref(false);
 const submitting = ref(false);
+const migrationProjects = ref([]);
+const selectedMigrationProjectId = ref("");
+const migrationPlan = ref(null);
+const migrationBusy = ref(false);
+const migrationMessage = ref("");
 const stageAuditForm = reactive({
   comment: "",
 });
@@ -123,6 +131,93 @@ async function loadAudit() {
   }
 }
 
+async function loadMigrationProjects() {
+  const payload = await api.getProjects();
+  migrationProjects.value = payload.items.filter((project) => project.chainStatus !== "confirmed");
+  if (!selectedMigrationProjectId.value && migrationProjects.value[0]) {
+    selectedMigrationProjectId.value = String(migrationProjects.value[0].id);
+  }
+  if (selectedMigrationProjectId.value) {
+    await loadMigration(Number(selectedMigrationProjectId.value));
+  }
+}
+
+async function loadMigration(projectId = Number(selectedMigrationProjectId.value)) {
+  if (!projectId) {
+    migrationPlan.value = null;
+    return;
+  }
+  migrationPlan.value = await api.getMigration(projectId);
+}
+
+function formatEpoch(value) {
+  return value ? new Date(Number(value) * 1000).toLocaleString() : "无时间记录";
+}
+
+async function previewMigration() {
+  migrationMessage.value = "";
+  try {
+    migrationPlan.value = await api.previewMigration(Number(selectedMigrationProjectId.value));
+  } catch (error) {
+    errorMessage.value = error.message;
+  }
+}
+
+async function processMigration() {
+  const projectId = Number(selectedMigrationProjectId.value);
+  if (!projectId || migrationBusy.value) return;
+  migrationBusy.value = true;
+  errorMessage.value = "";
+  migrationMessage.value = "迁移交易按检查点和历史摘要批次逐笔核验。";
+  try {
+    let plan = await api.startMigration(projectId);
+    migrationPlan.value = plan;
+    if (!plan.checkpoint.txHash) {
+      const pending = getPendingEvidence("migration_checkpoint", projectId);
+      if (plan.checkpoint.candidateTxHash || pending) {
+        await retryEvidenceVerification(pending || {
+          businessType: "migration_checkpoint",
+          businessId: projectId,
+          chainId: Number(plan.checkpoint.chainId),
+          txHash: plan.checkpoint.candidateTxHash,
+        }, auth.user?.walletAddress);
+      } else {
+        const transaction = await submitMigrationCheckpoint(projectId, plan.checkpoint, auth.user?.walletAddress);
+        await confirmEvidenceTransaction("migration_checkpoint", projectId, transaction);
+      }
+    }
+    plan = await api.getMigration(projectId);
+    migrationPlan.value = plan;
+    for (const batch of plan.batches) {
+      if (batch.txHash) continue;
+      const pending = getPendingEvidence("migration_batch", batch.id);
+      if (batch.candidateTxHash || pending) {
+        await retryEvidenceVerification(pending || {
+          businessType: "migration_batch",
+          businessId: batch.id,
+          chainId: Number(batch.chainId),
+          txHash: batch.candidateTxHash,
+        }, auth.user?.walletAddress);
+      } else {
+        const transaction = await submitMigrationBatch(projectId, batch, auth.user?.walletAddress);
+        await confirmEvidenceTransaction("migration_batch", batch.id, transaction);
+      }
+      plan = await api.getMigration(projectId);
+      migrationPlan.value = plan;
+      migrationMessage.value = `已核验历史批次 ${batch.batchNo + 1}/${plan.batches.length}：${batch.category}`;
+    }
+    plan = await api.getMigration(projectId);
+    migrationPlan.value = plan;
+    migrationMessage.value = plan.status === "completed" ? "历史摘要迁移全部完成，项目现在可继续由链上流程推进。" : "迁移检查点和批次已处理，可刷新查看最新状态。";
+    await Promise.all([loadAudit(), loadMigrationProjects()]);
+  } catch (error) {
+    errorMessage.value = error.message;
+    await loadMigration(projectId).catch(() => {});
+  } finally {
+    migrationBusy.value = false;
+  }
+}
+
 async function submitStageAudit(decision) {
   if (!selectedStage.value) {
     return;
@@ -130,13 +225,33 @@ async function submitStageAudit(decision) {
   submitting.value = true;
   errorMessage.value = "";
   try {
-    const payload = await api.submitStageAudit({
+    const request = await api.submitStageAudit({
       projectId: selectedStage.value.projectId,
       stageNo: selectedStage.value.stageNo,
       decision,
       comment: stageAuditForm.comment.trim(),
     });
-    actionMessage.value = payload.message;
+    const pending = getPendingEvidence("stage_audit", request.businessId);
+    if (request.candidateTxHash || pending) {
+      await retryEvidenceVerification(pending || {
+        businessType: "stage_audit",
+        businessId: request.businessId,
+        chainId: Number(request.chainId),
+        txHash: request.candidateTxHash,
+        comment: stageAuditForm.comment.trim(),
+      }, auth.user?.walletAddress);
+    } else {
+      const transaction = await sendStageAudit(
+        request.projectId,
+        request.stageNo,
+        request.businessId,
+        decision === "pass",
+        request.digest,
+        auth.user?.walletAddress,
+      );
+      await confirmEvidenceTransaction("stage_audit", request.businessId, transaction, stageAuditForm.comment.trim());
+    }
+    actionMessage.value = `阶段审计交易已核验：${request.businessId}`;
     closeStageAudit();
     await loadAudit();
   } catch (error) {
@@ -153,12 +268,31 @@ async function submitFinalAudit(decision) {
   submitting.value = true;
   errorMessage.value = "";
   try {
-    const payload = await api.submitFinalAudit({
+    const request = await api.submitFinalAudit({
       projectId: selectedFinalProject.value.projectId,
       decision,
       comment: finalAuditForm.comment.trim(),
     });
-    actionMessage.value = payload.message;
+    const pending = getPendingEvidence("final_audit", request.businessId);
+    if (request.candidateTxHash || pending) {
+      await retryEvidenceVerification(pending || {
+        businessType: "final_audit",
+        businessId: request.businessId,
+        chainId: Number(request.chainId),
+        txHash: request.candidateTxHash,
+        comment: finalAuditForm.comment.trim(),
+      }, auth.user?.walletAddress);
+    } else {
+      const transaction = await sendFinalAudit(
+        request.projectId,
+        request.businessId,
+        decision === "pass",
+        request.digest,
+        auth.user?.walletAddress,
+      );
+      await confirmEvidenceTransaction("final_audit", request.businessId, transaction, finalAuditForm.comment.trim());
+    }
+    actionMessage.value = `最终审计交易已核验：${request.businessId}`;
     closeFinalAudit();
     await loadAudit();
   } catch (error) {
@@ -168,8 +302,12 @@ async function submitFinalAudit(decision) {
   }
 }
 
+onMounted(() => {
+  Promise.all([loadAudit(), loadMigrationProjects()]).catch((error) => {
+    errorMessage.value = error.message;
+  });
+});
 
-onMounted(loadAudit);
 </script>
 
 <template>
@@ -186,6 +324,56 @@ onMounted(loadAudit);
         <button class="button" type="button" @click="loadAudit">刷新审计态势</button>
       </template>
     </PageHero>
+
+    <section class="panel reveal-card stride-section migration-panel">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow">历史摘要迁移</div>
+          <h3>把旧记录摘要锚定到真实合约</h3>
+        </div>
+        <span class="pill subtle">管理员钱包签名</span>
+      </div>
+      <p class="meta-line">迁移记录会分别保存原始创建时间和实际上链时间。迁移只证明摘要在当前区块被锚定，不表示原业务发生时已经上链。</p>
+      <div class="migration-controls">
+        <div class="field">
+          <label>选择项目</label>
+          <select v-model="selectedMigrationProjectId" @change="loadMigration(Number(selectedMigrationProjectId))">
+            <option value="" disabled>请选择需要迁移的项目</option>
+            <option v-for="project in migrationProjects" :key="project.id" :value="String(project.id)">
+              {{ project.name }} / {{ project.chainStatus === "legacy" ? "待迁移" : project.chainStatus }}
+            </option>
+          </select>
+        </div>
+        <div class="button-row">
+          <button class="secondary-button" type="button" :disabled="!selectedMigrationProjectId || migrationBusy" @click="previewMigration">预览确定性摘要</button>
+          <button class="button" type="button" :disabled="!selectedMigrationProjectId || migrationBusy || migrationPlan?.status === 'completed'" @click="processMigration">
+            {{ migrationBusy ? "等待钱包确认与核验..." : migrationPlan?.status === "pending" || migrationPlan?.status === "confirmed" ? "启动 / 续跑迁移" : "开始迁移" }}
+          </button>
+        </div>
+      </div>
+      <template v-if="migrationPlan">
+        <div class="migration-checkpoint">
+          <strong>{{ migrationPlan.projectName }} / 检查点</strong>
+          <div class="meta-line">状态：{{ migrationPlan.status }} ｜ 原项目创建：{{ migrationPlan.checkpoint.sourceCreatedAtText }} ｜ 恢复阶段：{{ migrationPlan.checkpoint.currentStage }} ｜ 已通过阶段：{{ migrationPlan.checkpoint.passedStageCount }}</div>
+          <div class="mono">确定性摘要：{{ migrationPlan.checkpoint.digest }}</div>
+          <div v-if="migrationPlan.checkpoint.txHash" class="mono">迁移交易：{{ migrationPlan.checkpoint.txHash }} / 区块 {{ migrationPlan.checkpoint.blockNumber }} / 实际上链时间 {{ migrationPlan.checkpoint.anchoredAt }}</div>
+          <div v-else-if="migrationPlan.checkpoint.candidateTxHash" class="meta-line">待核验的同一笔交易：{{ migrationPlan.checkpoint.candidateTxHash }}</div>
+        </div>
+        <div class="migration-batch-list">
+          <article v-for="batch in migrationPlan.batches" :key="batch.batchNo" class="migration-batch-card">
+            <div class="project-card-top">
+              <strong>{{ batch.category }} / {{ batch.recordCount }} 条源记录</strong>
+              <StatusTag :value="batch.status === 'confirmed' ? 'migrated' : 'pending'" />
+            </div>
+            <div class="meta-line">源时间：{{ formatEpoch(batch.sourceFrom) }} — {{ formatEpoch(batch.sourceTo) }}</div>
+            <div class="mono">摘要：{{ batch.digest }}</div>
+            <div v-if="batch.txHash" class="mono">实际上链交易：{{ batch.txHash }} / 区块 {{ batch.blockNumber }} / {{ batch.anchoredAt }}</div>
+            <div v-else-if="batch.candidateTxHash" class="meta-line">待核验交易：{{ batch.candidateTxHash }}</div>
+          </article>
+        </div>
+      </template>
+      <p v-if="migrationMessage" class="feedback success-text">{{ migrationMessage }}</p>
+    </section>
 
     <section class="showcase-grid showcase-grid-audit">
       <section class="panel reveal-card">
@@ -306,7 +494,8 @@ onMounted(loadAudit);
               <strong>{{ tx.type }}</strong>
               <div class="mono">{{ tx.txHash }}</div>
               <p>{{ tx.comment }}</p>
-              <div class="meta-line">{{ tx.createdAt }}</div>
+              <div class="meta-line">网络 {{ tx.chainId }} ｜ 区块 {{ tx.blockNumber }} ｜ 实际上链 {{ tx.anchoredAt || tx.createdAt }}</div>
+              <div v-if="tx.recordOrigin === 'migration'" class="meta-line">迁移存证。源创建时间：{{ tx.sourceCreatedAt || '无时间记录' }}；该交易证明摘要在迁移时上链。</div>
             </div>
             <StatusTag :value="tx.status" />
           </article>

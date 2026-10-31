@@ -47,6 +47,16 @@ export const useAuthStore = defineStore("auth", {
         this.loading = false;
       }
     },
+    async loginWithDemo(userId) {
+      this.loading = true;
+      try {
+        const payload = await api.demoLogin(userId);
+        this.persist(payload);
+        return payload;
+      } finally {
+        this.loading = false;
+      }
+    },
     async refreshMe() {
       if (!this.session?.token) {
         return null;

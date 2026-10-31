@@ -321,6 +321,8 @@ onBeforeUnmount(() => {
                       <span>{{ item.createdAt }}</span>
                       <span class="mono">{{ shortHash(item.txHash) }}</span>
                     </div>
+                    <div class="home-activity-meta">网络 {{ item.chainId }} ｜ 区块 {{ item.blockNumber }}</div>
+                    <div v-if="item.recordOrigin === 'migration'" class="home-activity-meta">迁移存证｜源创建 {{ item.sourceCreatedAt || "无时间记录" }}｜实际上链 {{ item.anchoredAt }}</div>
                     <StatusTag :value="item.status" />
                   </article>
                   <article v-if="!visibleTransactions.length" class="home-activity-item">

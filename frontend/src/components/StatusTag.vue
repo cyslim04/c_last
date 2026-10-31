@@ -20,6 +20,8 @@ const visualMap = {
   ready: { label: "可执行", tone: "running" },
   running: { label: "推进中", tone: "running" },
   confirmed: { label: "已确认", tone: "completed" },
+  migrated: { label: "迁移存证", tone: "running" },
+  legacy: { label: "待历史迁移", tone: "warning" },
   uploaded: { label: "待存证", tone: "pending" },
   notarized: { label: "已存证", tone: "running" },
   approved: { label: "已通过", tone: "completed" },

@@ -5,16 +5,19 @@ import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
 import { useWalletStore } from "../stores/wallet";
+import { confirmEvidenceTransaction, getPendingEvidence, retryEvidenceVerification, submitDeliverableConfirmation } from "../web3/evidence";
 
 const wallet = useWalletStore();
 
 const stages = ref([]);
+const projects = ref([]);
 const message = ref("");
 const errorMessage = ref("");
+const submitting = reactive({});
 const comments = reactive({});
 
 const canConfirm = computed(() => wallet.connected && wallet.supportedNetwork && wallet.address);
-const pendingStages = computed(() => stages.value.filter((item) => ["uploaded", "notarized"].includes(item.latestDeliverable.status)));
+const pendingStages = computed(() => stages.value.filter((item) => item.latestDeliverable.status === "notarized" || item.latestDeliverable.status === "rejected"));
 
 const heroStats = computed(() => [
   {
@@ -39,7 +42,8 @@ function buildStageKey(item) {
 }
 
 async function loadStages() {
-  const [deliverablePayload, worklogPayload] = await Promise.all([api.getDeliverables(), api.getWorklogs()]);
+  const [deliverablePayload, worklogPayload, projectPayload] = await Promise.all([api.getDeliverables(), api.getWorklogs(), api.getProjects()]);
+  projects.value = projectPayload.items;
   const grouped = new Map();
 
   worklogPayload.items.forEach((worklog) => {
@@ -87,6 +91,11 @@ async function loadStages() {
     if (!(key in comments)) {
       comments[key] = item.latestDeliverable.status === "notarized" ? `阶段 ${item.stageNo} 客户确认通过，进入管理员阶段审计。` : "";
     }
+    const pending = getPendingEvidence("deliverable_confirmation", item.latestDeliverable.id);
+    if (pending?.txHash && !item.latestDeliverable.confirmationCandidateTxHash) {
+      item.latestDeliverable.confirmationCandidateTxHash = pending.txHash;
+      item.latestDeliverable.confirmationChainId = String(pending.chainId || "");
+    }
   });
 }
 
@@ -95,19 +104,40 @@ async function confirmStage(stage, approved) {
     errorMessage.value = "请先连接 MetaMask 并切换到 Sepolia 或 Hardhat。";
     return;
   }
+  const project = projects.value.find((entry) => entry.id === stage.projectId);
+  if (!project) {
+    errorMessage.value = "找不到当前阶段对应的项目，请刷新后重试。";
+    return;
+  }
+  const item = stage.latestDeliverable;
+  const pending = getPendingEvidence("deliverable_confirmation", item.id);
+  const retrying = Boolean(item.confirmationCandidateTxHash || pending);
+  if (!retrying && item.status !== "notarized" && item.status !== "rejected") {
+    errorMessage.value = "请先将交付物摘要上链并完成核验，再提交客户确认。";
+    return;
+  }
+  const comment = comments[buildStageKey(stage)] || (approved ? "客户确认通过。" : "客户驳回，需要继续修改。");
+  submitting[buildStageKey(stage)] = true;
   try {
-    await api.saveEvidence({
-      businessType: "deliverable_confirmation",
-      businessId: stage.latestDeliverable.id,
-      txHash: `0xcf${Date.now().toString(16)}${stage.latestDeliverable.id.toString(16)}`,
-      blockNumber: Date.now(),
-      status: approved ? "confirmed" : "failed",
-      comment: comments[buildStageKey(stage)] || (approved ? "客户确认通过。" : "客户驳回，需要继续修改。"),
-    });
-    message.value = `阶段 ${stage.stageNo} 的确认结果已记录。`;
+    if (retrying) {
+      await retryEvidenceVerification(pending || {
+        businessType: "deliverable_confirmation",
+        businessId: item.id,
+        chainId: Number(item.confirmationChainId),
+        txHash: item.confirmationCandidateTxHash,
+        comment,
+      }, project.clientWallet);
+    } else {
+      const transaction = await submitDeliverableConfirmation(project, item, approved);
+      await confirmEvidenceTransaction("deliverable_confirmation", item.id, transaction, comment);
+    }
+    message.value = `阶段 ${stage.stageNo} 的客户决定已从链上回执核验。`;
     await loadStages();
   } catch (error) {
     errorMessage.value = error.message;
+    await loadStages().catch(() => {});
+  } finally {
+    submitting[buildStageKey(stage)] = false;
   }
 }
 
@@ -184,8 +214,11 @@ onMounted(() => {
             </div>
             <textarea v-model="comments[buildStageKey(stage)]" placeholder="填写本阶段确认意见或驳回原因" />
             <div class="button-row">
-              <button class="button" type="button" @click="confirmStage(stage, true)">确认通过</button>
-              <button class="secondary-button" type="button" @click="confirmStage(stage, false)">驳回阶段</button>
+              <button v-if="!stage.latestDeliverable.confirmationCandidateTxHash" class="button" type="button" :disabled="submitting[buildStageKey(stage)] || !['notarized', 'rejected'].includes(stage.latestDeliverable.status)" @click="confirmStage(stage, true)">确认通过</button>
+              <button v-if="!stage.latestDeliverable.confirmationCandidateTxHash" class="secondary-button" type="button" :disabled="submitting[buildStageKey(stage)] || !['notarized', 'rejected'].includes(stage.latestDeliverable.status)" @click="confirmStage(stage, false)">驳回阶段</button>
+              <button v-else class="secondary-button" type="button" :disabled="submitting[buildStageKey(stage)]" @click="confirmStage(stage, Boolean(stage.latestDeliverable.status !== 'rejected'))">重试核验原交易</button>
+              <div v-if="stage.latestDeliverable.confirmationTxHash" class="mono">客户确认交易：{{ stage.latestDeliverable.confirmationTxHash }} / 区块 {{ stage.latestDeliverable.confirmationBlockNumber }}</div>
+              <div v-if="stage.latestDeliverable.confirmationCandidateTxHash" class="meta-line">待核验交易：{{ stage.latestDeliverable.confirmationCandidateTxHash }}（请重试同一笔）</div>
             </div>
           </div>
         </article>

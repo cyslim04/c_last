@@ -5,13 +5,19 @@ import MemberPicker from "../components/MemberPicker.vue";
 import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
+import { useAuthStore } from "../stores/auth";
+import { useWalletStore } from "../stores/wallet";
+import { confirmEvidenceTransaction, getPendingEvidence, retryEvidenceVerification, submitProjectCreation } from "../web3/evidence";
 
+const auth = useAuthStore();
+const wallet = useWalletStore();
 
 const projects = ref([]);
 const developers = ref([]);
 const clients = ref([]);
 const message = ref("");
 const errorMessage = ref("");
+const chainBusy = ref({});
 const form = reactive({
   name: "",
   description: "",
@@ -20,6 +26,12 @@ const form = reactive({
 });
 
 const recentProjects = computed(() => projects.value.slice(0, 4));
+function chainStatusLabel(status) {
+  if (status === "confirmed") return "链上已核验";
+  if (status === "migrating") return "历史迁移中";
+  if (status === "pending") return "待链上创建";
+  return "待历史摘要迁移";
+}
 const heroStats = computed(() => [
   {
     label: "在线项目",
@@ -64,12 +76,49 @@ async function createProject() {
       developerId: Number(form.developerId),
       clientId: Number(form.clientId),
     });
-    message.value = payload.message;
     form.name = "";
     form.description = "";
     await loadData();
+    const project = projects.value.find((item) => item.id === payload.projectId);
+    message.value = payload.message;
+    if (project) {
+      try {
+        await writeProjectCreation(project);
+      } catch (error) {
+        errorMessage.value = `项目已保存，链上创建仍待处理：${error.message}`;
+      }
+    }
   } catch (error) {
     errorMessage.value = error.message;
+  }
+}
+
+async function writeProjectCreation(project) {
+  errorMessage.value = "";
+  chainBusy.value[project.id] = true;
+  try {
+    const pending = getPendingEvidence("project", project.id);
+    if (project.candidateTxHash || pending) {
+      await retryEvidenceVerification(pending || {
+        businessType: "project",
+        businessId: project.id,
+        chainId: Number(project.chainId),
+        txHash: project.candidateTxHash,
+      }, auth.user?.walletAddress);
+    } else {
+      const transaction = await submitProjectCreation(
+        project.id,
+        project.developerWallet,
+        project.clientWallet,
+        project.digest,
+        auth.user?.walletAddress,
+      );
+      await confirmEvidenceTransaction("project", project.id, transaction);
+    }
+    message.value = `项目 ${project.name} 的链上创建已核验。`;
+    await loadData();
+  } finally {
+    chainBusy.value[project.id] = false;
   }
 }
 
@@ -93,7 +142,7 @@ onMounted(() => {
       :stats="heroStats"
     >
       <template #actions>
-        <button class="button" type="button" @click="createProject">保存项目</button>
+        <button class="button" type="button" @click="createProject" :disabled="!form.name || !form.developerId || !form.clientId">保存并创建链上项目</button>
       </template>
     </PageHero>
 
@@ -149,9 +198,20 @@ onMounted(() => {
                 <strong>{{ project.name }}</strong>
                 <div class="meta-line">开发者：{{ project.developerName }} ｜ 客户：{{ project.clientName }}</div>
               </div>
-              <StatusTag :value="project.status" />
+              <div class="project-status-stack">
+                <StatusTag :value="project.status" />
+                <span class="pill subtle">{{ chainStatusLabel(project.chainStatus) }}</span>
+              </div>
             </div>
             <p>{{ project.description }}</p>
+            <div v-if="project.txHash && project.recordOrigin !== 'migration'" class="mono">项目创建交易：{{ project.txHash }} / 网络 {{ project.chainId }} / 区块 {{ project.blockNumber }}</div>
+            <div v-if="project.txHash && project.recordOrigin === 'migration'" class="meta-line">迁移存证｜源创建 {{ project.sourceCreatedAt || '时间未知' }}｜实际上链 {{ project.anchoredAt || '时间未知' }}｜检查点交易 {{ project.txHash }} / 区块 {{ project.blockNumber }}</div>
+            <div v-if="project.legacyTxHash" class="meta-line">旧模拟哈希（不是链上交易）：{{ project.legacyTxHash }}</div>
+            <div class="button-row">
+              <button v-if="project.chainStatus === 'pending'" class="secondary-button" type="button" :disabled="chainBusy[project.id]" @click="writeProjectCreation(project)">
+                {{ chainBusy[project.id] ? "等待链上确认..." : project.candidateTxHash ? "重试核验同一笔交易" : "完成链上创建" }}
+              </button>
+            </div>
           </article>
         </div>
       </section>

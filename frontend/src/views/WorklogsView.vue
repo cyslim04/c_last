@@ -7,6 +7,7 @@ import PageHero from "../components/PageHero.vue";
 import StatusTag from "../components/StatusTag.vue";
 import { api } from "../api/http";
 import { useWalletStore } from "../stores/wallet";
+import { confirmEvidenceTransaction, getPendingEvidence, retryEvidenceVerification, submitWorklogEvidence } from "../web3/evidence";
 
 const wallet = useWalletStore();
 
@@ -14,6 +15,7 @@ const items = ref([]);
 const projects = ref([]);
 const resultMessage = ref("");
 const errorMessage = ref("");
+const writing = reactive({});
 const form = reactive({
   projectId: "",
   workDate: new Date().toISOString().slice(0, 10),
@@ -78,19 +80,32 @@ async function writeEvidence(item) {
   }
   errorMessage.value = "";
   resultMessage.value = "";
+  const project = projects.value.find((entry) => entry.id === item.projectId);
+  if (!project) {
+    errorMessage.value = "找不到该工时所属项目，请刷新后重试。";
+    return;
+  }
+  writing[item.id] = true;
   try {
-    await api.saveEvidence({
-      businessType: "worklog",
-      businessId: item.id,
-      txHash: `0xwl${Date.now().toString(16)}${item.id.toString(16)}`,
-      blockNumber: Date.now(),
-      status: "confirmed",
-      comment: `${item.projectName} 的工时摘要已完成链上存证`,
-    });
-    resultMessage.value = `工时 ${item.id} 已完成链上存证。`;
+    const pending = getPendingEvidence("worklog", item.id);
+    if (item.candidateTxHash || pending) {
+      await retryEvidenceVerification(pending || {
+        businessType: "worklog",
+        businessId: item.id,
+        chainId: Number(item.chainId),
+        txHash: item.candidateTxHash,
+      }, project.developerWallet);
+    } else {
+      const transaction = await submitWorklogEvidence(project, item);
+      await confirmEvidenceTransaction("worklog", item.id, transaction, `${item.projectName} 工时摘要`);
+    }
+    resultMessage.value = `工时 ${item.id} 的交易回执和合约事件已核验。`;
     await loadData();
   } catch (error) {
     errorMessage.value = error.message;
+    await loadData().catch(() => {});
+  } finally {
+    writing[item.id] = false;
   }
 }
 
@@ -185,14 +200,19 @@ onMounted(() => {
             <p>{{ item.taskDescription }}</p>
             <div class="mono">{{ item.digest }}</div>
             <div class="button-row">
+              <div v-if="item.txHash" class="mono">真实交易：{{ item.txHash }} / 网络 {{ item.chainId }} / 区块 {{ item.blockNumber }}</div>
+              <div v-if="item.migrationTxHash" class="meta-line">迁移存证｜源创建 {{ item.createdAt || item.workDate }}｜实际上链 {{ item.migrationAnchoredAt || '时间未知' }}｜迁移交易 {{ item.migrationTxHash }} / 区块 {{ item.migrationBlockNumber }}</div>
+              <div v-if="item.legacyTxHash" class="meta-line">旧模拟哈希（不是链上交易）：{{ item.legacyTxHash }}</div>
               <button
-                v-if="item.evidenceStatus !== 'confirmed'"
+                v-if="!['confirmed', 'migrated'].includes(item.evidenceStatus)"
                 class="secondary-button"
                 type="button"
+                :disabled="writing[item.id]"
                 @click="writeEvidence(item)"
               >
-                提交链上存证
+                {{ writing[item.id] ? "等待链上确认..." : item.candidateTxHash ? "重试核验同一笔交易" : "提交真实链上存证" }}
               </button>
+              <p v-if="item.candidateTxHash" class="meta-line">待核验交易：{{ item.candidateTxHash }}</p>
             </div>
           </article>
         </div>
